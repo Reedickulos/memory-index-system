@@ -1,0 +1,12 @@
+{
+  "project": "My Project",
+  "created": "2026-06-19",
+  "description": "Boot sequence for any agent joining this project.",
+  "boot_sequence": [
+    "INDEX.md",
+    "identity/project-charter.md",
+    "identity/claim-boundary.md",
+    "semantic/hypothesis-core.md",
+    "procedural/agent-handoff-protocol.md"
+  ]
+}

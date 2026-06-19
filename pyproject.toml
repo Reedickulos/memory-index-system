@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memory-index-system"
+version = "0.1.0"
+description = "Portable, integrity-checked agent memory layers for long-running research."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "COREPACT AI TECHNOLOGIES", email = "corelab@corepact.ai"}
+]
+keywords = ["agent", "memory", "knowledge-management", "ai-safety", "alignment"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.10"
+
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+memory-index-init = "memory_index_system.cli:init"
+memory-index-verify = "memory_index_system.cli:verify"
+memory-index-sign = "memory_index_system.cli:sign"
+
+[project.urls]
+Homepage = "https://github.com/reedickulos/memory-index-system"
+Documentation = "https://github.com/reedickulos/memory-index-system/tree/main/docs"
+Repository = "https://github.com/reedickulos/memory-index-system"
+Issues = "https://github.com/reedickulos/memory-index-system/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["memory_index_system*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
