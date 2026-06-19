@@ -1,6 +1,6 @@
 # Architecture
 
-> **CORE-LAB — A DIVISION OF COREPACT AI TECHNOLOGIES**  
+> **A COREPACT AI TECHNOLOGIES Project**  
 > **ALIGNED BY DESIGN**
 
 ## Directory layout

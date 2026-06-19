@@ -1,6 +1,6 @@
 # Contributing to Memory Index System
 
-> **CORE-LAB — A DIVISION OF COREPACT AI TECHNOLOGIES**  
+> **A COREPACT AI TECHNOLOGIES Project**  
 > **ALIGNED BY DESIGN**
 
 Thank you for helping make agent memory safer, more portable, and more honest.

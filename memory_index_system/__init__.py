@@ -1,6 +1,6 @@
 """Memory Index System — portable, integrity-checked agent memory layers.
 
-CORE-LAB — A DIVISION OF COREPACT AI TECHNOLOGIES
+A COREPACT AI TECHNOLOGIES Project
 ALIGNED BY DESIGN
 """
 

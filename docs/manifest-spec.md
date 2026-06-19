@@ -1,6 +1,6 @@
 # Manifest Specification
 
-> **CORE-LAB — A DIVISION OF COREPACT AI TECHNOLOGIES**  
+> **A COREPACT AI TECHNOLOGIES Project**  
 > **ALIGNED BY DESIGN**
 
 ## `manifests/initiation-order.json`

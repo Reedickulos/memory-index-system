@@ -1,6 +1,6 @@
 # Code of Conduct
 
-> **CORE-LAB — A DIVISION OF COREPACT AI TECHNOLOGIES**  
+> **A COREPACT AI TECHNOLOGIES Project**  
 > **ALIGNED BY DESIGN**
 
 We pledge to make participation in this project a harassment-free experience for everyone, regardless of age, body size, disability, ethnicity, gender identity and expression, level of experience, nationality, personal appearance, race, religion, or sexual identity and orientation.

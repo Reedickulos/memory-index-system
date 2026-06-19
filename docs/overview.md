@@ -1,6 +1,6 @@
 # Overview
 
-> **CORE-LAB — A DIVISION OF COREPACT AI TECHNOLOGIES**  
+> **A COREPACT AI TECHNOLOGIES Project**  
 > **ALIGNED BY DESIGN**
 
 The Memory Index System is a lightweight, file-based knowledge architecture for projects that span multiple AI sessions, models, or human collaborators.

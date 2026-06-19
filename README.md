@@ -1,6 +1,8 @@
 # Memory Index System
 
-> **CORE-LAB — A DIVISION OF COREPACT AI TECHNOLOGIES**  
+![COREPACT AI TECHNOLOGIES logo](assets/COREPACT.jpg)
+
+> **A COREPACT AI TECHNOLOGIES Project**  
 > **ALIGNED BY DESIGN**  
 > *Human-safety alignment is the first principle.*
 
@@ -124,5 +126,5 @@ We welcome contributions that improve portability, integrity, and alignment. See
 ---
 
 > *COREPACT — CONSENSUS Orchestration Reasoning Engine Protocol for Artificial Collaborative Think-tank.*  
-> *CORE-LAB — A DIVISION OF COREPACT AI TECHNOLOGIES.*  
+> *A COREPACT AI TECHNOLOGIES Project.*  
 > **ALIGNED BY DESIGN.**
