@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -647,8 +648,9 @@ def test_sign_mints_and_announces_tree_id_when_empty_or_invalid(bad_tree_id, cap
         assert isinstance(tree_id, str) and tree_id
 
 
-def test_migrate_upgrades_a_verified_v1_tree(signed_tree, capsys):
+def test_migrate_upgrades_a_verified_v1_tree(signed_tree, isolated_revision_record, capsys):
     v1 = _relabel_as_v1(signed_tree)
+    isolated_revision_record.unlink()  # a genuine pre-v2 tree: no v2 history on this machine
 
     assert migrate([str(signed_tree)]) == 0
     assert "unauthenticated" in capsys.readouterr().err
@@ -659,12 +661,13 @@ def test_migrate_upgrades_a_verified_v1_tree(signed_tree, capsys):
     assert run_verify(signed_tree) == 0
 
 
-def test_migrate_discards_a_tree_id_found_on_a_v1_manifest(signed_tree):
+def test_migrate_discards_a_tree_id_found_on_a_v1_manifest(signed_tree, isolated_revision_record):
     """No v1 tool ever wrote a tree_id, so one on a v1 manifest wasn't put
     there by a signer and mustn't end up covered by a v2 signature."""
     manifest = _relabel_as_v1(signed_tree)
     manifest["tree_id"] = "planted-by-someone"
     _save(signed_tree, manifest)
+    isolated_revision_record.unlink()
 
     assert migrate([str(signed_tree)]) == 0
     assert _load(signed_tree)["tree_id"] != "planted-by-someone"
@@ -709,3 +712,132 @@ def test_migrate_requires_the_key(capsys):
         run_init(target)
         assert migrate([str(target / ".memory")]) == 1
         assert "KIMI_MEMORY_KEY is not set" in capsys.readouterr().err
+
+
+def test_sign_without_key_refuses_to_strip_a_signed_manifest(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            run_init(target)
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+        memory = target / ".memory"
+        before = _load(memory)
+
+        assert run_sign(memory) == 1
+        assert "would strip its signature" in capsys.readouterr().err
+        assert _load(memory) == before
+
+
+def _snapshot(memory: Path, dest: Path) -> Path:
+    shutil.copytree(memory, dest)
+    return dest
+
+
+def _restore(snapshot: Path, memory: Path) -> None:
+    shutil.rmtree(memory)
+    shutil.copytree(snapshot, memory)
+
+
+def _recorded_revision(memory: Path):
+    from memory_index_system import ratchet
+
+    tree_id = _load(memory)["tree_id"]
+    entry = ratchet.load(b"test-secret").get(tree_id)
+    return entry["revision"] if entry else None
+
+
+def test_verify_refuses_an_older_signed_state_restored_over_a_newer_one(signed_tree, tmp_path, capsys):
+    """Rollback: every hash and the signature of the restored state are
+    genuine, so only the revision record can catch it."""
+    old = _snapshot(signed_tree, tmp_path / "rev1")
+    (signed_tree / "episodic" / "note.md").write_text("newer", encoding="utf-8")
+    assert run_sign(signed_tree) == 0
+    assert run_verify(signed_tree) == 0
+
+    _restore(old, signed_tree)
+    capsys.readouterr()
+    assert run_verify(signed_tree) == 1
+    assert "Rollback check failed" in capsys.readouterr().err
+
+
+def test_sign_refuses_to_build_on_a_rolled_back_state(signed_tree, tmp_path, capsys):
+    old = _snapshot(signed_tree, tmp_path / "rev1")
+    assert run_sign(signed_tree) == 0
+
+    _restore(old, signed_tree)
+    before = _load(signed_tree)
+    assert run_sign(signed_tree) == 1
+    assert "older than revision 2" in capsys.readouterr().err
+    assert _load(signed_tree) == before
+
+
+def test_verify_only_raises_the_record_after_a_full_pass(signed_tree):
+    assert _recorded_revision(signed_tree) == 1  # init records its revision
+    assert run_sign(signed_tree) == 0
+    assert _recorded_revision(signed_tree) == 2
+
+    from memory_index_system import ratchet
+
+    manifest = _load(signed_tree)
+    ratchet_path = ratchet.ratchet_path()
+    trees = json.loads(ratchet_path.read_text(encoding="utf-8"))
+    ratchet_path.unlink()  # forget, then fail a verify: nothing may be recorded
+    (signed_tree / "episodic" / "note.md").write_text("untracked", encoding="utf-8")
+    assert run_verify(signed_tree) == 1
+    assert not ratchet_path.exists()
+    assert manifest["tree_id"] in trees["trees"]
+
+
+def test_migrate_refuses_when_this_machine_saw_a_v2_tree_at_the_path(signed_tree, capsys):
+    """The downgrade: v2 relabelled as v1 with tree_id stripped. The
+    manifest alone can't tell, but this machine has seen v2 here."""
+    before = _relabel_as_v1(signed_tree)
+    assert migrate([str(signed_tree)]) == 1
+    assert "looks like a downgrade" in capsys.readouterr().err
+    assert _load(signed_tree) == before
+
+
+def test_a_tampered_revision_record_fails_closed(signed_tree, isolated_revision_record, capsys):
+    data = json.loads(isolated_revision_record.read_text(encoding="utf-8"))
+    for entry in data["trees"].values():
+        entry["revision"] = 0  # try to wind history back without the key
+    isolated_revision_record.write_text(json.dumps(data), encoding="utf-8")
+
+    assert run_verify(signed_tree) == 1
+    assert "failed authentication" in capsys.readouterr().err
+    assert run_sign(signed_tree) == 1
+
+    isolated_revision_record.unlink()  # the documented reset
+    assert run_verify(signed_tree) == 0
+
+
+def test_the_record_only_moves_forward(signed_tree):
+    from memory_index_system import ratchet
+
+    tree_id = _load(signed_tree)["tree_id"]
+    assert ratchet.record(b"test-secret", tree_id, 7, signed_tree) is None
+    assert ratchet.record(b"test-secret", tree_id, 3, signed_tree) is None
+    assert ratchet.load(b"test-secret")[tree_id]["revision"] == 7
+
+
+def test_unsigned_trees_never_touch_the_record(isolated_revision_record):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        assert run_sign(target / ".memory") == 0
+        assert run_verify(target / ".memory") == 0
+    assert not isolated_revision_record.exists()
+
+
+def test_a_held_record_lock_warns_instead_of_failing(signed_tree, isolated_revision_record, capsys):
+    lock = isolated_revision_record.with_name(isolated_revision_record.name + ".lock")
+    lock.write_text("", encoding="utf-8")
+    try:
+        assert run_verify(signed_tree) == 0
+        assert "revision record not updated" in capsys.readouterr().err
+    finally:
+        lock.unlink()

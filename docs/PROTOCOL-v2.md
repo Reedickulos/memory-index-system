@@ -122,8 +122,13 @@ have changed, since re-hashing them is what signing is for — so the normal
 revision and tree_id genuinely can't be authenticated (a stripped signature
 looks the same), so they're taken as-is, once. Setting the key *before*
 `memory-index-init` avoids this entirely — the tree is signed from the
-start. Without a key, signing works as before and writes an unsigned
-manifest; there's nothing to authenticate.
+start.
+
+Without a key, signing an unsigned tree works as before and writes an
+unsigned manifest; there's nothing to authenticate. Signing a **signed**
+tree without the key is refused: writing it back unsigned would strip its
+signature, silently dropping the tree's protection until someone with the
+key noticed.
 
 A `tree_id` that is missing, empty, or not a string is treated the same way
 by every signer: a fresh one is minted, and a message says so.
@@ -137,12 +142,16 @@ refusing if anything fails. Only then does it write a v2 manifest (revision
 incremented, a freshly minted `tree_id`). It's a no-op on a tree already on v2.
 
 v1 never covered `revision`, so the revision migrate carries forward is
-unauthenticated, and it can't tell a genuine pre-v2 tree from a downgraded
-v2 one (§3). **Running it is the one step that needs a person's judgement:
-don't run it automatically in response to a verify failure** — doing that on
-a downgraded tree is exactly what an attacker would want. Any `tree_id` on a
-v1 manifest is discarded rather than carried forward, since no v1 tool ever
-wrote one.
+unauthenticated, and from the manifest alone it can't tell a genuine pre-v2
+tree from a downgraded v2 one (§3). The revision record (§5) narrows this:
+migrate refuses if this machine has already seen a v2-signed tree at the
+same path, which is what a downgrade looks like — an attacker can strip
+`tree_id` but not move the tree. On a machine with no history for that path
+(a fresh machine, or a deleted record) that check has nothing to go on, so
+**running migrate still needs a person's judgement there: don't run it
+automatically in response to a verify failure** — doing that on a downgraded
+tree is exactly what an attacker would want. Any `tree_id` on a v1 manifest
+is discarded rather than carried forward, since no v1 tool ever wrote one.
 
 ### 4.3 The in-tree scripts
 
@@ -170,13 +179,51 @@ The standalone signer applies the same authentication rules as §4.1,
 including `--adopt-unsigned`; it has no migrate, so a v1-signed tree needs
 the installed package.
 
-## 5. Still not covered: rollback
+## 5. Rollback: the per-machine revision record
 
-v2 closes "edit the revision (or tree_id) without the key" — it does not
-close "replay a whole older, validly-signed (revision, tree_id, files)
-tuple over a newer state." That's still the gap documented in v1 §7, and it
-requires something outside the manifest — an external record of the
-highest revision seen for a given `tree_id` — which v2 does not add. See v1
-§7 for the full explanation; nothing here changes that analysis, except
-that `tree_id` is now available as the natural key for such a record
-(rather than a filesystem path, which doesn't survive a legitimate move).
+A valid signature proves a manifest was signed at some point, not that it's
+the latest one: a whole older, validly-signed (revision, tree_id, files)
+state can be restored over a newer one and still verify, because every hash
+and the signature genuinely match. Nothing inside the manifest can catch
+that (v1 §7); it needs an external reference to "the newest state already
+seen." This implementation keeps one per machine.
+
+**The record.** `~/.memory-registry/ratchet.json` (override the location
+with the `MEMORY_INDEX_RATCHET` environment variable) maps each `tree_id` to
+the highest revision seen for it and the path it was last seen at. It is
+signed with the same key as the trees, so it can't be forged or wound back
+without the key. It sits beside the registry but in its own file, because
+a registry rescan drops entries for roots it wasn't given.
+
+**How it's used** (only with the key set — without it, neither a manifest's
+revision nor the record can be authenticated, and the record isn't read):
+
+| command | checks | records |
+|---|---|---|
+| `memory-index-init` | — | the new tree at revision 1 |
+| `memory-index-verify` | refuses a revision lower than the recorded one | the revision, only after the whole tree passed |
+| `memory-index-sign` | refuses to sign on top of a revision lower than the recorded one | the new revision |
+| `memory-index-migrate` | refuses if a v2 tree was already seen at this path (§4.2) | the migrated revision |
+
+A record that fails authentication makes all of these fail closed. The
+record only ever moves forward; if its lock is held by another process for
+too long, the command still succeeds and warns that this one update wasn't
+recorded.
+
+**What it doesn't cover:**
+- **No history, no protection.** On a machine that has never seen a tree,
+  or after the record is deleted (deleting it is also the way to reset a
+  record that no longer authenticates, e.g. after changing keys), the first
+  state it sees is accepted as the baseline. Deletion needs only write
+  access to the home directory, not the key.
+- **Per machine only.** Two machines don't share history; a rollback made
+  on one machine to a state newer than anything the other has seen isn't
+  detectable there.
+- **The key holder.** Anyone with the key can sign anything, including a
+  "newer" revision of old content.
+- **The standalone in-tree scripts** (`.memory/scripts/*.py`) don't read or
+  write the record; they're built to run with no package installed and no
+  shared state. Only the installed commands give rollback protection.
+- **Same revision, different content.** Only the revision number is
+  recorded, so two different states signed at the same revision (e.g. by
+  two machines that each signed revision N) aren't told apart.

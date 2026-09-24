@@ -196,6 +196,11 @@ not part of what makes a tree conformant).
 
 ## 7. Known limitation: no rollback/replay protection
 
+> **This implementation now partially addresses this** with a per-machine,
+> signed record of the highest revision seen per tree — see
+> [PROTOCOL-v2.md §5](PROTOCOL-v2.md) for what it does and doesn't cover.
+> The analysis below still holds for the manifest format itself.
+
 *(Written for v1's files-only signature. [PROTOCOL-v2.md](PROTOCOL-v2.md)
 now covers `revision` and adds `tree_id`, which closes the "edit revision
 without the key" version of this problem described below — but not the

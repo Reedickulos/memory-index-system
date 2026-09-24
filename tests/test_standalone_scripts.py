@@ -428,3 +428,16 @@ def test_installed_sign_repairs_verifier_after_bundled_sign_adopted_tree():
 
         result = run_script("verify-manifest.py", memory, env=KEY_ENV)
         assert result.returncode == 0, result.stderr
+
+
+def test_standalone_sign_without_key_refuses_to_strip_a_signed_manifest():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        memory = init_signed(target)
+        before = _load(memory)
+
+        result = run_script("sign-manifest.py", memory)
+        assert result.returncode == 1
+        assert "would strip its signature" in result.stderr
+        assert _load(memory) == before
