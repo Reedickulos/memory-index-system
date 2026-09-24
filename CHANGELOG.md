@@ -37,6 +37,13 @@ versions may include breaking changes.
   template on every run, so a tree's bundled verifier can always check the
   format just written. Running `.memory/scripts/sign-manifest.py` with no
   package installed can't do this — see docs/PROTOCOL-v2.md §4.3.
+- Rollback detection: a signed, per-machine record of the highest revision
+  seen for each tree (`~/.memory-registry/ratchet.json`, or
+  `MEMORY_INDEX_RATCHET`). With the key set, verify and sign refuse an older
+  signed state restored over a newer one, and migrate refuses a tree whose
+  path this machine has already seen as v2. It covers only history this
+  machine has seen and can be reset by deleting the file; the in-tree
+  scripts don't use it. See docs/PROTOCOL-v2.md §5.
 - `memory-index-sign` now holds an advisory lock for its read-check-write
   sequence and writes `manifest.json` atomically, closing most of a race
   where two concurrent signs could both pass `--expect-revision`.

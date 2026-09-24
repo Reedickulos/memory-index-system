@@ -294,6 +294,7 @@ def verify_manifest(root: Path, allow_legacy: bool = False) -> Dict:
         "extra": extra,
         "unsafe": unsafe,
         "signature": signature,
+        "manifest": manifest,
     }
 
 

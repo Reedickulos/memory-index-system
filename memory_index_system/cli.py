@@ -7,8 +7,9 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Optional
 
-from . import __version__, registry
+from . import __version__, ratchet, registry
 from .crypto import get_key, sign_manifest_v2
 from .manifest import (
     V1_ALG,
@@ -68,7 +69,33 @@ def init(args=None):
         manifest["signature"] = {"alg": "HMAC-SHA256-v2", "value": sig}
     _write_manifest_atomic(memory / "manifests" / "manifest.json", manifest)
     print(f"Initialized memory tree at {memory}")
+    if sig and not _record_revision(manifest, memory):
+        return 1
     return 0
+
+
+def _record_revision(manifest: dict, memory: Path) -> bool:
+    """Record a signed manifest's revision in this machine's revision record.
+    Returns False (after printing why) if the record can't be trusted."""
+    try:
+        warning = ratchet.record(get_key(), manifest["tree_id"], manifest["revision"], memory)
+    except ratchet.RatchetError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return False
+    if warning:
+        print(f"Warning: {warning}", file=sys.stderr)
+    return True
+
+
+def _rollback_refusal(manifest: dict) -> Optional[str]:
+    """Why this signed manifest's revision can't be accepted on this machine,
+    or None. Only meaningful with the key set: without it neither the
+    manifest's revision nor the record itself can be authenticated."""
+    try:
+        trees = ratchet.load(get_key())
+    except ratchet.RatchetError as exc:
+        return str(exc)
+    return ratchet.rollback_error(trees, manifest.get("tree_id"), manifest.get("revision", 0))
 
 
 def verify(args=None):
@@ -83,14 +110,26 @@ def verify(args=None):
         return 1
     signature = result["signature"]
 
-    if result["ok"]:
-        print("Manifest verification passed.")
-        if not signature["present"]:
-            print(f"Warning: {signature['reason']}", file=sys.stderr)
-        return 0
+    if not result["ok"]:
+        _report_verify_failures(result)
+        return 1
 
-    _report_verify_failures(result)
-    return 1
+    # A signature that passed with the key set is a v2 one, so its revision
+    # is authentic; checking it against this machine's record is what
+    # catches an older signed state restored over a newer one. The record is
+    # only raised after the whole tree has passed.
+    if signature["present"]:
+        refusal = _rollback_refusal(result["manifest"])
+        if refusal:
+            print(f"Rollback check failed: {refusal}", file=sys.stderr)
+            return 1
+        if not _record_revision(result["manifest"], Path(parsed.memory)):
+            return 1
+
+    print("Manifest verification passed.")
+    if not signature["present"]:
+        print(f"Warning: {signature['reason']}", file=sys.stderr)
+    return 0
 
 
 def _report_verify_failures(result: dict) -> None:
@@ -133,7 +172,9 @@ def _acquire_sign_lock(memory: Path):
     return lock_path
 
 
-def _write_signed_manifest(memory: Path, revision: int, tree_id) -> None:
+def _write_signed_manifest(memory: Path, revision: int, tree_id) -> bool:
+    """Write and (with the key set) sign the next manifest, then record it in
+    this machine's revision record. Returns False if recording failed."""
     if tree_id is None:
         print("No tree_id found on this manifest; minting one now.")
 
@@ -157,6 +198,7 @@ def _write_signed_manifest(memory: Path, revision: int, tree_id) -> None:
     else:
         print("KIMI_MEMORY_KEY not set; manifest generated without signature.")
     _write_manifest_atomic(memory / "manifests" / "manifest.json", manifest)
+    return not sig or _record_revision(manifest, memory)
 
 
 def sign(args=None):
@@ -245,7 +287,16 @@ def sign(args=None):
             )
             return 1
 
-        _write_signed_manifest(memory, current_revision + 1, recorded_tree_id(previous))
+        # Signing on top of a rolled-back state would bless it with a fresh,
+        # valid signature, so refuse here rather than leave it to verify.
+        if get_key() is not None and previous is not None:
+            refusal = _rollback_refusal(previous)
+            if refusal:
+                print(f"Refusing to sign: {refusal}", file=sys.stderr)
+                return 1
+
+        if not _write_signed_manifest(memory, current_revision + 1, recorded_tree_id(previous)):
+            return 1
         return 0
     finally:
         lock_path.unlink(missing_ok=True)
@@ -306,15 +357,35 @@ def migrate(args=None):
             _report_verify_failures(result)
             return 1
 
+        # A downgrade attacker can strip tree_id, but not move the tree: if
+        # this machine has already seen a v2 manifest at this path, a v1 one
+        # here now is what a downgrade looks like, not a pre-v2 tree.
+        try:
+            seen = ratchet.seen_at_path(ratchet.load(get_key()), memory)
+        except ratchet.RatchetError as exc:
+            print(f"Refusing to migrate: {exc}", file=sys.stderr)
+            return 1
+        if seen:
+            print(
+                f"Refusing to migrate: this machine has already seen a v2-signed tree at {memory} "
+                f"(tree {seen[0]}, revision {seen[1]}), so a v1 manifest here now looks like a "
+                "downgrade, not a tree that predates v2.",
+                file=sys.stderr,
+            )
+            return 1
+
         revision = previous.get("revision", 0)
         print(
             f"Warning: v1 signatures never covered revision, so revision {revision} is being "
-            "carried forward unauthenticated.",
+            "carried forward unauthenticated. This machine has no v2 history for this path, "
+            "which is expected for a genuine pre-v2 tree but can't rule out a downgrade on "
+            "a machine that never saw the tree before.",
             file=sys.stderr,
         )
         # No v1 tool ever wrote a tree_id, so one present on a v1 manifest
         # wasn't put there by a signer; don't carry it into a v2 signature.
-        _write_signed_manifest(memory, revision + 1, None)
+        if not _write_signed_manifest(memory, revision + 1, None):
+            return 1
         print("Migrated to signature format v2.")
         return 0
     finally:
