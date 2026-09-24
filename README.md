@@ -1,11 +1,5 @@
 # Memory Index System
 
-![COREPACT AI TECHNOLOGIES logo](assets/COREPACT.jpg)
-
-> **A COREPACT AI TECHNOLOGIES Project**  
-> **ALIGNED BY DESIGN**  
-> *Human-safety alignment is the first principle.*
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/tests-pytest-brightgreen.svg)](.github/workflows/ci.yml)
@@ -28,6 +22,14 @@ Long-running projects die when context is trapped inside a single chat, notebook
 ---
 
 ## Quick start
+
+Try it with no install, using [pipx](https://pipx.pypa.io/):
+
+```bash
+pipx run --spec git+https://github.com/reedickulos/memory-index-system memory-index-init ./my-research-project
+```
+
+Or install it properly:
 
 ```bash
 # Clone the repo
@@ -126,7 +128,7 @@ graph TD
 - **Claim boundaries** live in `identity/claim-boundary.md`. Agents must enforce them.
 - **Boot sequence** in `manifests/initiation-order.json` forces orientation before action.
 - **Manifests** detect tampering or accidental drift.
-- **ALIGNED BY DESIGN** means human safety, traceability, and falsifiability are first-class, not afterthoughts.
+- **Safety-first by design** — traceability and falsifiability are structural, not afterthoughts.
 
 ---
 
@@ -139,6 +141,7 @@ graph TD
 - [Manifest Spec](docs/manifest-spec.md)
 - [Registry Spec](docs/registry-spec.md)
 - [FAQ](docs/faq.md)
+- [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
 
 ---
@@ -155,6 +158,8 @@ We welcome contributions that improve portability, integrity, and alignment. See
 
 ---
 
-> *COREPACT — CONSENSUS Orchestration Reasoning Engine Protocol for Artificial Collaborative Think-tank.*  
-> *A COREPACT AI TECHNOLOGIES Project.*  
-> **ALIGNED BY DESIGN.**
+## About
+
+![COREPACT AI TECHNOLOGIES logo](assets/COREPACT.jpg)
+
+Memory Index System is **A COREPACT AI TECHNOLOGIES Project — ALIGNED BY DESIGN**, meaning human safety, traceability, and falsifiability come first. *COREPACT — CONSENSUS Orchestration Reasoning Engine Protocol for Artificial Collaborative Think-tank.*

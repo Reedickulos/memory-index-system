@@ -186,3 +186,31 @@ def test_sign_with_stale_expect_revision_is_refused():
         assert json.loads(
             (memory / "manifests" / "manifest.json").read_text(encoding="utf-8")
         )["revision"] == 2
+
+
+def test_init_excludes_pycache_from_bundled_templates(monkeypatch):
+    """A real install can get templates/*.py byte-compiled by pip; init must
+    not copy __pycache__/*.pyc into the new tree or hash it into the manifest."""
+    import shutil as shutil_module
+
+    from memory_index_system import cli as cli_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        fake_template = Path(tmp) / "fake-template" / ".memory"
+        shutil_module.copytree(cli_module.TEMPLATE_DIR, fake_template)
+
+        pycache = fake_template / "scripts" / "__pycache__"
+        pycache.mkdir()
+        (pycache / "init-memory.cpython-313.pyc").write_bytes(b"fake bytecode")
+
+        monkeypatch.setattr(cli_module, "TEMPLATE_DIR", fake_template)
+
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        assert run_init(target) == 0
+
+        memory = target / ".memory"
+        assert not (memory / "scripts" / "__pycache__").exists()
+
+        manifest = json.loads((memory / "manifests" / "manifest.json").read_text(encoding="utf-8"))
+        assert not any("__pycache__" in entry["path"] or entry["path"].endswith(".pyc") for entry in manifest["files"])

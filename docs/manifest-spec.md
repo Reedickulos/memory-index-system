@@ -1,8 +1,5 @@
 # Manifest Specification
 
-> **A COREPACT AI TECHNOLOGIES Project**  
-> **ALIGNED BY DESIGN**
-
 ## `manifests/initiation-order.json`
 
 Tells an agent which files to load first.
