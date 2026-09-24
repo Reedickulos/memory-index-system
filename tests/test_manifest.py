@@ -136,3 +136,53 @@ def test_verify_passes_unsigned_manifest_with_warning():
         target.mkdir()
         run_init(target)  # no KIMI_MEMORY_KEY set
         assert run_verify(target / ".memory") == 0
+
+
+def test_revision_starts_at_one_and_increments_on_sign():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        manifest_path = memory / "manifests" / "manifest.json"
+
+        assert json.loads(manifest_path.read_text(encoding="utf-8"))["revision"] == 1
+
+        run_sign(memory)
+        assert json.loads(manifest_path.read_text(encoding="utf-8"))["revision"] == 2
+
+        run_sign(memory)
+        assert json.loads(manifest_path.read_text(encoding="utf-8"))["revision"] == 3
+
+
+def test_sign_with_correct_expect_revision_succeeds():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+
+        rc = sign([str(memory), "--expect-revision", "1"])
+        assert rc == 0
+        assert json.loads(
+            (memory / "manifests" / "manifest.json").read_text(encoding="utf-8")
+        )["revision"] == 2
+
+
+def test_sign_with_stale_expect_revision_is_refused():
+    """Simulates two agents: one signs first, the other's stale --expect-revision must be refused."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+
+        run_sign(memory)  # agent A signs; revision goes 1 -> 2
+
+        # agent B still thinks the revision is 1 (stale read) and tries to sign
+        rc = sign([str(memory), "--expect-revision", "1"])
+        assert rc == 1
+        # the on-disk manifest must be untouched by the refused attempt
+        assert json.loads(
+            (memory / "manifests" / "manifest.json").read_text(encoding="utf-8")
+        )["revision"] == 2

@@ -50,6 +50,9 @@ memory-index-sign ./my-research-project/.memory
 memory-index-registry-scan ~/projects --save-roots
 memory-index-registry-list
 memory-index-registry-search "ledger continuity"
+
+# See what changed in a project's identity files since the last scan
+memory-index-registry-diff ./my-research-project/.memory
 ```
 
 Your project now has a `.memory/` directory:
@@ -129,6 +132,7 @@ graph TD
 
 ## Documentation
 
+- [Protocol (v1)](docs/PROTOCOL.md) — what makes a `.memory/` tree or another tool compatible with this one, independent of language or implementation
 - [Overview](docs/overview.md)
 - [Architecture](docs/architecture.md)
 - [Agent Protocol](docs/agent-protocol.md)

@@ -18,8 +18,20 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def read_revision(root: Path) -> int:
+    manifest_path = root / "manifests" / "manifest.json"
+    if not manifest_path.exists():
+        return 0
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return 0
+    return int(data.get("revision", 0))
+
+
 def main():
     root = Path(__file__).resolve().parent.parent
+    revision = read_revision(root) + 1
     entries = []
     for dirpath, _dirnames, filenames in os.walk(root):
         for fn in filenames:
@@ -34,6 +46,7 @@ def main():
         "project": "Memory Index System project",
         "generated": datetime.now(timezone.utc).isoformat(),
         "generator": "memory-index-system 0.1.0",
+        "revision": revision,
         "file_count": len(entries),
         "files": entries,
     }
