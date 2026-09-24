@@ -4,6 +4,8 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from memory_index_system import registry
 from memory_index_system.cli import init, registry_diff, registry_list, registry_scan, registry_search
 
@@ -261,3 +263,41 @@ def test_find_memory_trees_does_not_descend_into_skip_dirs():
 
         found = registry.find_memory_trees(root)
         assert found == []
+
+
+def test_is_stale_handles_naive_timestamp_without_crashing():
+    """A last_synced value without a timezone offset must not crash the comparison."""
+    entry = {"last_synced": "2026-01-01T00:00:00"}  # no offset
+    assert registry.is_stale(entry) is True
+
+
+def test_project_name_not_truncated_at_hash_character():
+    """## Name\n\nC# Tools should parse as 'C# Tools', not truncate at the '#'."""
+    charter = "## Name\n\nC# Tools\n\n## Purpose\n\nsomething\n"
+    assert registry._project_name(charter, "fallback-id") == "C# Tools"
+
+
+def test_tags_not_truncated_at_hash_character():
+    charter = "## Tags\n\nC#, R&D #1\n\n## Purpose\n\nsomething\n"
+    assert registry._project_tags(charter) == ["C#", "R&D #1"]
+
+
+def test_load_registry_fails_cleanly_on_corrupt_json():
+    with tempfile.TemporaryDirectory() as tmp:
+        registry_dir = Path(tmp) / "registry"
+        registry_dir.mkdir()
+        (registry_dir / "registry.json").write_text("{not valid json", encoding="utf-8")
+
+        with pytest.raises(ValueError):
+            registry.load_registry(registry_dir)
+
+
+def test_registry_list_fails_cleanly_on_corrupt_json(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        registry_dir = Path(tmp) / "registry"
+        registry_dir.mkdir()
+        (registry_dir / "registry.json").write_text("{not valid json", encoding="utf-8")
+
+        rc = registry_list(["--registry-dir", str(registry_dir)])
+        assert rc == 1
+        assert "Cannot read registry" in capsys.readouterr().err

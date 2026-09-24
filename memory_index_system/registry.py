@@ -36,8 +36,8 @@ SKIP_DIR_NAMES = {
 SUMMARY_CHARS = 250
 CHARTER_NAME_PLACEHOLDER = "My Project"
 
-_NAME_RE = re.compile(r"^##\s*Name\s*\n+([^\n#]+)", re.MULTILINE)
-_TAGS_RE = re.compile(r"^##\s*Tags\s*\n+([^\n#]+)", re.MULTILINE)
+_NAME_RE = re.compile(r"^##\s*Name\s*\n+([^\n]+)", re.MULTILINE)
+_TAGS_RE = re.compile(r"^##\s*Tags\s*\n+([^\n]+)", re.MULTILINE)
 
 
 def _now_iso() -> str:
@@ -149,7 +149,10 @@ def load_registry(registry_dir: Path = DEFAULT_REGISTRY_DIR) -> Dict:
     path = Path(registry_dir) / REGISTRY_FILENAME
     if not path.exists():
         return {"version": "1.0", "updated": None, "projects": []}
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Registry is not valid JSON: {path}") from exc
 
 
 def save_registry(registry: Dict, registry_dir: Path = DEFAULT_REGISTRY_DIR) -> Path:
@@ -188,8 +191,13 @@ def is_stale(entry: Dict, stale_after_days: int = DEFAULT_STALE_DAYS, now: Optio
         return True
     try:
         synced_at = datetime.fromisoformat(last_synced)
-    except ValueError:
+    except (ValueError, TypeError):
         return True
+    if synced_at.tzinfo is None:
+        # A naive timestamp shouldn't happen from our own writes (_now_iso always
+        # includes an offset), but treat it as UTC rather than crashing on the
+        # naive/aware subtraction below if one gets in some other way.
+        synced_at = synced_at.replace(tzinfo=timezone.utc)
     if now is None:
         now = datetime.now(timezone.utc)
     return (now - synced_at).total_seconds() > stale_after_days * 86400
