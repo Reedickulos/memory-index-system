@@ -29,11 +29,15 @@ REGISTRY_FILENAME = "registry.json"
 SCAN_ROOTS_FILENAME = "scan-roots.json"
 DEFAULT_MAX_DEPTH = 6
 DEFAULT_STALE_DAYS = 30
-SKIP_DIR_NAMES = {".git", ".venv", "venv", "node_modules", "__pycache__", ".memory-registry"}
+SKIP_DIR_NAMES = {
+    ".git", ".venv", "venv", "node_modules", "__pycache__", ".memory-registry",
+    ".cache", ".pytest_cache", ".tox", ".idea", ".vscode", "dist", "build",
+}
 SUMMARY_CHARS = 250
 CHARTER_NAME_PLACEHOLDER = "My Project"
 
 _NAME_RE = re.compile(r"^##\s*Name\s*\n+([^\n#]+)", re.MULTILINE)
+_TAGS_RE = re.compile(r"^##\s*Tags\s*\n+([^\n#]+)", re.MULTILINE)
 
 
 def _now_iso() -> str:
@@ -57,6 +61,22 @@ def _project_name(charter_text: str, project_id: str) -> str:
         if name and name != CHARTER_NAME_PLACEHOLDER:
             return name
     return _humanize(project_id)
+
+
+def _project_tags(charter_text: str) -> List[str]:
+    """Parse a comma-separated `## Tags` section from a project charter, if filled in.
+
+    Placeholder guidance text (e.g. "_Comma-separated tags..._") is italic in
+    the template, so a line starting with `_` is treated the same as an
+    unfilled section: no tags.
+    """
+    match = _TAGS_RE.search(charter_text)
+    if not match:
+        return []
+    raw = match.group(1).strip()
+    if not raw or raw.startswith("_"):
+        return []
+    return [tag.strip() for tag in raw.split(",") if tag.strip()]
 
 
 def find_memory_trees(root: Path, max_depth: int = DEFAULT_MAX_DEPTH) -> List[Path]:
@@ -100,7 +120,7 @@ def summarize_project(memory_dir: Path) -> Dict:
         "path": str(memory_dir),
         "name": _project_name(charter, project_id),
         "summary": charter[:SUMMARY_CHARS],
-        "tags": [],
+        "tags": _project_tags(charter),
         "status": "active",
         "last_synced": _now_iso(),
         "manifest_hash": manifest_hash,

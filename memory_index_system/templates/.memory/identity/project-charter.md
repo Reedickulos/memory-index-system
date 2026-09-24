@@ -4,6 +4,10 @@
 
 My Project
 
+## Tags
+
+_Comma-separated, e.g. research, finance, agents. Used by the registry's --tag search._
+
 ## Purpose
 
 _State the project’s purpose in one sentence._

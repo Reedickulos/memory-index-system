@@ -41,8 +41,8 @@ single project, at `~/.memory-registry/` by default.
 | `path` | string | Absolute path to the project's `.memory/` directory |
 | `name` | string | Parsed from the `## Name` section of `identity/project-charter.md`; falls back to a humanized `id` if the charter is missing or still has its placeholder text |
 | `summary` | string | First 250 characters of the charter |
-| `tags` | array | Reserved for future use; always `[]` today |
-| `status` | string | Always `"active"` today — there is no staleness/archival logic yet |
+| `tags` | array | Parsed from a `## Tags` section in `identity/project-charter.md` (comma-separated); `[]` if the section is absent |
+| `status` | string | Always `"active"` today; reserved for future archival states |
 | `last_synced` | string | ISO 8601 timestamp of the scan that produced this entry |
 | `manifest_hash` | string | `sha256:<hex>` of the project's own `manifests/manifest.json` file, as it stood at scan time |
 | `identity_summary.charter` | string | Full contents of `identity/project-charter.md` |
@@ -52,6 +52,10 @@ Only `identity/` content is copied into the registry. `episodic/`,
 `semantic/`, and `procedural/` files are never read by the scan — the
 registry is meant to be safe to hand to another agent as an index, not a
 copy of everything every project knows.
+
+Staleness is not stored as part of an entry — it's computed at read time
+from `last_synced` (see `is_stale()` and `memory-index-registry-list
+--stale-days`), so it always reflects "now," not the state at scan time.
 
 ### What counts as a project
 
