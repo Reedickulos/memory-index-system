@@ -99,6 +99,33 @@ upgrading is just re-signing. A tree that's never re-signed keeps its v1
 signature (if any) indefinitely; that's a legitimate, if not ideal, steady
 state, not an error.
 
+**Standalone `verify-manifest.py` needs upgrading too, and only the
+installed CLI does that automatically.** `.memory/scripts/{sign,verify}-manifest.py`
+are self-contained copies made once, at `init` time, from whatever version
+of the template existed then (see PROTOCOL.md §1). A tree initialized before
+v2 existed still carries a `verify-manifest.py` that only knows how to check
+the v1 (files-only) format — it has no `alg` dispatch at all, so it treats a
+v2 signature as simply not matching. Left alone, upgrading such a tree's
+`manifest.json` to v2 would make that tree's own bundled verifier reject its
+own manifest immediately.
+
+The installed `memory-index-sign` closes this: every call refreshes
+`scripts/*.py` from the package's current template before re-hashing the
+tree, so the copy that travels with the tree can check what was just written
+(and the refreshed files are themselves covered by the new signature, like
+anything else under the tree). This happens on every sign, not only when a
+`tree_id` is being minted, because a tree can already have a `tree_id` and a
+v2 signature while still carrying a legacy verifier — see the next paragraph.
+
+Running `.memory/scripts/sign-manifest.py` directly — the fully standalone
+path, with no package installed — does not refresh anything: that script
+mints `tree_id` and writes a valid v2 `manifest.json`, but it has no newer
+template to copy `verify-manifest.py` from. A legacy tree upgraded that way
+keeps a verifier that rejects its own manifest until the installed
+`memory-index-sign` is run against it once (or `scripts/` is refreshed by
+hand). This is a real, open gap in the fully standalone workflow, not an
+oversight being glossed over.
+
 ## 5. Still not covered: rollback
 
 v2 closes "edit the revision (or tree_id) without the key" — it does not

@@ -16,8 +16,30 @@ from pathlib import Path
 
 import pytest
 
-from memory_index_system.cli import init
+from memory_index_system.cli import init, sign
 from memory_index_system.crypto import sign_files_canonical
+
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+LEGACY_V1_VERIFY_SCRIPT = (FIXTURES_DIR / "legacy_verify_manifest_v1.py").read_text(encoding="utf-8")
+
+
+def downgrade_to_legacy_v1_tree(memory: Path) -> None:
+    """Rewrite a freshly-init'd (current, v2) tree to look like one that was
+    initialized before v2 existed: a files-only-signed manifest with no
+    tree_id, and scripts/verify-manifest.py replaced by the actual pre-v2
+    template content (from tests/fixtures/legacy_verify_manifest_v1.py,
+    copied verbatim from the last commit before v2 signing landed)."""
+    manifest_path = memory / "manifests" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("tree_id", None)
+    os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+    try:
+        sig = sign_files_canonical(manifest["files"])
+    finally:
+        del os.environ["KIMI_MEMORY_KEY"]
+    manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    (memory / "scripts" / "verify-manifest.py").write_text(LEGACY_V1_VERIFY_SCRIPT, encoding="utf-8")
 
 
 def run_script(script_name: str, memory: Path, env=None):
@@ -231,3 +253,93 @@ def test_standalone_sign_upgrades_legacy_v1_tree_to_v2():
 
         result = run_script("verify-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
         assert result.returncode == 0
+
+
+def test_legacy_in_tree_verifier_rejects_a_freshly_upgraded_v2_manifest():
+    """Root-cause reproduction: a tree whose scripts/ predates v2 (real
+    pre-v2 verify-manifest.py content) has its manifest upgraded to v2 by
+    something else -- here, writing a v2 signature directly, standing in for
+    whatever upgraded it -- while scripts/ is left untouched. That legacy
+    verifier only knows the files-only v1 check, so it rejects its own
+    tree's now-valid v2 manifest. This is the bug: not a hash mismatch, not
+    real tampering, just a stale in-tree verifier that predates the format
+    it's being asked to check."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        init([str(target)])
+        memory = target / ".memory"
+        downgrade_to_legacy_v1_tree(memory)
+
+        from memory_index_system.crypto import sign_manifest_v2
+
+        manifest_path = memory / "manifests" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["tree_id"] = "11111111-1111-1111-1111-111111111111"
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            sig = sign_manifest_v2(manifest["revision"], manifest["tree_id"], manifest["files"])
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+        manifest["signature"] = {"alg": "HMAC-SHA256-v2", "value": sig}
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+        result = run_script("verify-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
+        assert result.returncode == 1
+        assert "signature does not match" in result.stderr.lower()
+
+
+def test_sign_refreshes_legacy_scripts_when_upgrading_tree_to_v2():
+    """The fix: memory-index-sign (the installed CLI) upgrading a genuinely
+    legacy (pre-v2) tree must refresh scripts/*.py from the current template
+    in the same call that mints tree_id and writes the v2 signature -- so
+    the tree's own bundled verifier can check what was just written, instead
+    of rejecting it the way the previous test demonstrates."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        init([str(target)])
+        memory = target / ".memory"
+        downgrade_to_legacy_v1_tree(memory)
+        assert (memory / "scripts" / "verify-manifest.py").read_text(encoding="utf-8") == LEGACY_V1_VERIFY_SCRIPT
+
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            assert sign([str(memory)]) == 0
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+
+        refreshed = (memory / "scripts" / "verify-manifest.py").read_text(encoding="utf-8")
+        assert refreshed != LEGACY_V1_VERIFY_SCRIPT
+        assert "HMAC-SHA256-v2" in refreshed
+
+        result = run_script("verify-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
+        assert result.returncode == 0, result.stderr
+
+
+def test_installed_sign_repairs_verifier_after_bundled_sign_already_upgraded_tree():
+    """Bundled sign-manifest.py upgrades first (minting tree_id, writing v2)
+    but can't replace its legacy sibling verifier. The installed sign must
+    still repair it even though tree_id is already present."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        init([str(target)])
+        memory = target / ".memory"
+        downgrade_to_legacy_v1_tree(memory)
+        env = {"KIMI_MEMORY_KEY": "test-secret"}
+
+        assert run_script("sign-manifest.py", memory, env=env).returncode == 0
+        manifest = json.loads((memory / "manifests" / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["tree_id"]
+        assert manifest["signature"]["alg"] == "HMAC-SHA256-v2"
+        assert run_script("verify-manifest.py", memory, env=env).returncode == 1
+
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            assert sign([str(memory)]) == 0
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+
+        result = run_script("verify-manifest.py", memory, env=env)
+        assert result.returncode == 0, result.stderr

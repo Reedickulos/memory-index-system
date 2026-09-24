@@ -115,6 +115,15 @@ def main():
         if tree_id is None:
             tree_id = str(uuid.uuid4())
             print("No tree_id found on this manifest; minting one now (upgrading to signature format v2).")
+            # NOTE: unlike memory_index_system.cli.sign(), this standalone script
+            # cannot also refresh its sibling verify-manifest.py -- it has no
+            # newer template to copy from, since it's designed to run without
+            # the package installed. A verify-manifest.py that predates v2
+            # still only checks the old files-only format and will reject the
+            # v2 manifest this call is about to write. Run the installed
+            # `memory-index-sign` against this tree at least once (it syncs
+            # scripts/ from the current template on every run), or manually
+            # replace scripts/verify-manifest.py, to fix that.
 
         entries = [{"path": rel, "sha256": sha256_file(root / rel)} for rel in sorted(walk_files(root))]
 

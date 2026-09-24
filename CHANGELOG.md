@@ -22,6 +22,17 @@ versions may include breaking changes.
   signature. See docs/PROTOCOL-v2.md. Manifests signed under the old format
   still verify, flagged as legacy; `memory-index-sign` upgrades a tree to
   v2 automatically on its next run.
+- Fixed: that same v1→v2 upgrade used to leave a tree's own bundled
+  `scripts/verify-manifest.py` on the old files-only format, so it rejected
+  the tree's own manifest immediately after `memory-index-sign` upgraded it
+  (reproduced against a v1 template tree with `KIMI_MEMORY_KEY` set).
+  `memory-index-sign` now refreshes `scripts/*.py` from the current template
+  on every run, so the in-tree verifier can always check what was just
+  written, including trees first upgraded by their bundled
+  `sign-manifest.py` (which mints `tree_id` but can't replace its sibling
+  verifier). Running `.memory/scripts/sign-manifest.py` with no package
+  installed still can't repair the verifier itself — see
+  docs/PROTOCOL-v2.md §4.
 - `memory-index-sign` now holds an advisory lock for its read-check-write
   sequence and writes `manifest.json` atomically, closing most of a race
   where two concurrent signs could both pass `--expect-revision`.

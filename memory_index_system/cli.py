@@ -158,6 +158,18 @@ def sign(args=None):
             # format forever. Not silent -- this is a real, one-time change.
             print("No tree_id found on this manifest; minting one now (upgrading to signature format v2).")
 
+        # Unconditional, not gated on the tree_id check above: the bundled
+        # sign-manifest.py can upgrade a tree to v2 (minting tree_id) without
+        # being able to replace its legacy sibling verify-manifest.py, so
+        # "tree_id already present" does not mean the in-tree verifier can
+        # check what we're about to write.
+        shutil.copytree(
+            TEMPLATE_DIR / "scripts",
+            memory / "scripts",
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            dirs_exist_ok=True,
+        )
+
         manifest = build_manifest(memory, revision=current_revision + 1, tree_id=existing_tree_id)
         sig = sign_manifest_v2(manifest["revision"], manifest["tree_id"], manifest["files"])
         if sig:
