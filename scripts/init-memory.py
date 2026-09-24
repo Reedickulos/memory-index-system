@@ -1,30 +1,17 @@
 #!/usr/bin/env python3
-"""Standalone helper: scaffold a .memory/ tree."""
+"""Standalone entry point: scaffold a .memory/ tree.
 
-import argparse
-import json
-import shutil
+Thin wrapper over memory_index_system.cli.init so there is exactly one
+implementation to fix. Requires the package to be installed (pip install -e .);
+use `memory-index-init` directly if it's on PATH.
+"""
+
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent / "templates" / ".memory"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-
-def main():
-    parser = argparse.ArgumentParser(description="Initialize a .memory/ tree.")
-    parser.add_argument("target", help="Project directory")
-    args = parser.parse_args()
-
-    target = Path(args.target).resolve()
-    memory = target / ".memory"
-    if memory.exists():
-        print(f"Already exists: {memory}", file=sys.stderr)
-        return 1
-
-    shutil.copytree(ROOT, memory)
-    print(f"Initialized {memory}")
-    return 0
-
+from memory_index_system.cli import init
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(init())
