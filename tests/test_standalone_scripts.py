@@ -14,6 +14,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from memory_index_system.cli import init
 
 
@@ -112,3 +114,20 @@ def test_standalone_verify_fails_cleanly_on_corrupt_manifest():
         result = run_script("verify-manifest.py", memory)
         assert result.returncode == 1
         assert "not valid JSON" in result.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="drive-letter/backslash escape is Windows-specific")
+def test_standalone_verify_rejects_windows_drive_and_backslash_paths():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        init([str(target)])
+        memory = target / ".memory"
+        manifest_path = memory / "manifests" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"].append({"path": "C:/Windows/System32/drivers/etc/hosts", "sha256": "a" * 64})
+        manifest["files"].append({"path": "..\\..\\outside.txt", "sha256": "b" * 64})
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+        result = run_script("verify-manifest.py", memory)
+        assert result.returncode == 1

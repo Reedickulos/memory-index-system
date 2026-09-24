@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Dict, List
 
 from . import __version__
@@ -47,8 +47,20 @@ def _is_ignored_file(name: str) -> bool:
     return name in IGNORE_FILE_NAMES or name.endswith(IGNORE_FILE_SUFFIXES)
 
 
-def _is_safe_relative_path(path_str: str) -> bool:
-    """Reject a manifest entry path that could escape the tree it's supposed to describe.
+def _is_safe_relative_path(root: Path, path_str: str) -> bool:
+    """Reject a manifest entry path that could escape root, by actually
+    joining and resolving it with the host's own Path class and checking
+    containment — not by pattern-matching for '..' or a leading '/'.
+
+    Pattern-matching against PurePosixPath rules alone is not enough: on
+    Windows, "C:/Windows/x" and "..\\..\\x" are neither absolute nor
+    contain a POSIX ".." component under PurePosixPath, but `root / path_str`
+    a few lines later uses the *host's* Path class (WindowsPath here), which
+    does treat a drive letter as absolute and a backslash as a separator —
+    so a manifest crafted with either would pass a POSIX-only check and then
+    genuinely escape root once joined and read. Resolving with the same Path
+    class that will actually perform the join guarantees the safety check
+    and the real access agree.
 
     Only used against paths read from a manifest.json (untrusted input from
     disk) — paths this module generates itself via _walk_files are always
@@ -56,8 +68,15 @@ def _is_safe_relative_path(path_str: str) -> bool:
     """
     if not path_str:
         return False
-    p = PurePosixPath(path_str)
-    return not p.is_absolute() and ".." not in p.parts
+    try:
+        resolved = (root / path_str).resolve()
+    except (OSError, ValueError):
+        return False
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def _walk_files(root: Path) -> List[str]:
@@ -167,7 +186,7 @@ def verify_manifest(root: Path) -> Dict:
     recorded_paths = set()
     for entry in manifest.get("files", []):
         entry_path = entry.get("path", "")
-        if not _is_safe_relative_path(entry_path):
+        if not _is_safe_relative_path(root, entry_path):
             unsafe.append(entry_path)
             continue
         recorded_paths.add(entry_path)

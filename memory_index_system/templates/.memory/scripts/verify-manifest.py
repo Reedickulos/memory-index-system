@@ -14,7 +14,7 @@ import hmac
 import json
 import os
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 IGNORE_DIR_NAMES = {"__pycache__"}
 IGNORE_FILE_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
@@ -25,11 +25,23 @@ def is_ignored_file(name: str) -> bool:
     return name in IGNORE_FILE_NAMES or name.endswith(IGNORE_FILE_SUFFIXES)
 
 
-def is_safe_relative_path(path_str: str) -> bool:
+def is_safe_relative_path(root: Path, path_str: str) -> bool:
+    """Reject a path that could escape root, by actually joining and
+    resolving it with the host's own Path class and checking containment --
+    not by pattern-matching for '..' or a leading '/', which a Windows drive
+    letter or backslash-separated ".." can bypass (see manifest.py's
+    _is_safe_relative_path for the full explanation)."""
     if not path_str:
         return False
-    p = PurePosixPath(path_str)
-    return not p.is_absolute() and ".." not in p.parts
+    try:
+        resolved = (root / path_str).resolve()
+    except (OSError, ValueError):
+        return False
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def walk_files(root: Path):
@@ -80,7 +92,7 @@ def main():
     recorded_paths = set()
     for entry in manifest.get("files", []):
         entry_path = entry.get("path", "")
-        if not is_safe_relative_path(entry_path):
+        if not is_safe_relative_path(root, entry_path):
             print(f"Rejected manifest entry (unsafe path): {entry_path}", file=sys.stderr)
             ok = False
             continue

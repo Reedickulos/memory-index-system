@@ -111,9 +111,21 @@ Verification MUST also walk the tree independently (applying the same
 ignore rules as §2) and fail if any file exists on disk that isn't recorded
 in `files` — checking only recorded entries against disk can never detect
 an *added* file, which is the more likely tampering vector for a memory
-tree than modifying an existing one. And a manifest entry's `path` MUST be
-rejected (not resolved) if it's absolute or contains a `..` segment, since
-naively joining it with the tree root can escape the tree.
+tree than modifying an existing one.
+
+A manifest entry's `path` MUST be checked for containment before it's read,
+and the check MUST use the host's own path-resolution semantics — join
+`path` with the tree root, resolve it, and confirm the result still lives
+under the resolved root — rather than pattern-matching the string for a
+leading `/` or a POSIX `..` segment. Pattern-matching against POSIX rules
+alone is not sufficient: on Windows, a value like `C:/Windows/x` or
+`..\..\x` is neither absolute nor contains a `..` component under POSIX
+path rules, but resolving it with the host's actual path class (which is
+what happens when the entry is subsequently read) does escape the tree —
+`root / "C:/Windows/x"` discards `root` entirely on Windows, since joining
+onto an absolute path resets the accumulated path. Validate containment
+with the same path implementation that will perform the real join, not a
+POSIX-specific stand-in for it.
 
 `memory-index-verify` runs all of these checks.
 

@@ -8,10 +8,21 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12"]
+    defaults:
+      run:
+        # windows-latest runners ship Git Bash; using it uniformly means the
+        # existing bash-specific steps (if/then, /tmp paths) don't need a
+        # separate PowerShell version. This also means Windows coverage here
+        # is specifically about the Python path-handling code actually
+        # running as native Windows processes -- which is the point, since
+        # that's where a Windows-only bug (drive-letter/backslash path
+        # escapes) would show up, not in the shell orchestrating it.
+        shell: bash
 
     steps:
       - uses: actions/checkout@v4
