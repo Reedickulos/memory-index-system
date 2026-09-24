@@ -9,8 +9,16 @@ import sys
 from pathlib import Path
 
 from . import __version__, registry
-from .crypto import sign_files_canonical
-from .manifest import build_manifest, read_revision, verify_manifest
+from .crypto import get_key, sign_manifest_v2
+from .manifest import (
+    V1_ALG,
+    V2_ALG,
+    build_manifest,
+    read_manifest,
+    recorded_tree_id,
+    verify_manifest,
+    verify_signature,
+)
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates" / ".memory"
 
@@ -51,11 +59,13 @@ def init(args=None):
     # __pycache__ into every new tree and build_manifest would hash it,
     # making verify fail later for reasons unrelated to actual content.
     shutil.copytree(TEMPLATE_DIR, memory, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    # Generate initial manifest
+    # Generate initial manifest. tree_id is freshly minted here (build_manifest
+    # mints one when none is given) -- this is the one place that's correct,
+    # since it's genuinely a new tree; sign() below always reuses the existing one.
     manifest = build_manifest(memory)
-    sig = sign_files_canonical(manifest["files"])
+    sig = sign_manifest_v2(manifest["revision"], manifest["tree_id"], manifest["files"])
     if sig:
-        manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
+        manifest["signature"] = {"alg": "HMAC-SHA256-v2", "value": sig}
     _write_manifest_atomic(memory / "manifests" / "manifest.json", manifest)
     print(f"Initialized memory tree at {memory}")
     return 0
@@ -79,6 +89,12 @@ def verify(args=None):
             print(f"Warning: {signature['reason']}", file=sys.stderr)
         return 0
 
+    _report_verify_failures(result)
+    return 1
+
+
+def _report_verify_failures(result: dict) -> None:
+    signature = result["signature"]
     if result["missing"]:
         print("Missing files:", ", ".join(result["missing"]), file=sys.stderr)
     if result["extra"]:
@@ -92,7 +108,55 @@ def verify(args=None):
         )
     if not signature["ok"]:
         print(f"Signature check failed: {signature['reason']}", file=sys.stderr)
-    return 1
+
+
+def _acquire_sign_lock(memory: Path):
+    """Take the tree's advisory sign lock; return its path, or None (after
+    printing why) if another sign already holds it.
+
+    It closes the gap between reading the current revision and writing the
+    next one: without it, two concurrent signs could both read revision N and
+    both believe they're clear to write N+1, even with matching
+    --expect-revision. os.O_EXCL creation is atomic, so only one caller wins.
+    """
+    lock_path = memory / "manifests" / ".sign.lock"
+    try:
+        os.close(os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        print(
+            f"Another sign is already in progress on this tree ({lock_path} exists). "
+            "If nothing is actually running, a previous sign may have crashed — "
+            "remove the lock file and retry.",
+            file=sys.stderr,
+        )
+        return None
+    return lock_path
+
+
+def _write_signed_manifest(memory: Path, revision: int, tree_id) -> None:
+    if tree_id is None:
+        print("No tree_id found on this manifest; minting one now.")
+
+    # Every run, not only when minting a tree_id: a tree can already carry a
+    # tree_id and a v2 signature while its bundled verify-manifest.py still
+    # predates v2 (e.g. it was adopted by the bundled sign-manifest.py, which
+    # can't replace its sibling). The refreshed files are hashed below, so
+    # they're covered by the signature like everything else in the tree.
+    shutil.copytree(
+        TEMPLATE_DIR / "scripts",
+        memory / "scripts",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        dirs_exist_ok=True,
+    )
+
+    manifest = build_manifest(memory, revision=revision, tree_id=tree_id)
+    sig = sign_manifest_v2(manifest["revision"], manifest["tree_id"], manifest["files"])
+    if sig:
+        manifest["signature"] = {"alg": V2_ALG, "value": sig}
+        print("Manifest signed with KIMI_MEMORY_KEY.")
+    else:
+        print("KIMI_MEMORY_KEY not set; manifest generated without signature.")
+    _write_manifest_atomic(memory / "manifests" / "manifest.json", manifest)
 
 
 def sign(args=None):
@@ -107,6 +171,15 @@ def sign(args=None):
             "same tree without knowing about each other's change."
         ),
     )
+    parser.add_argument(
+        "--adopt-unsigned",
+        action="store_true",
+        help=(
+            "With KIMI_MEMORY_KEY set, allow signing a tree whose current manifest is "
+            "missing or unsigned (e.g. one created before a key existed). Its revision "
+            "and tree_id can't be authenticated, so they're taken as-is. Needed once per tree."
+        ),
+    )
     parsed = parser.parse_args(args)
 
     memory = Path(parsed.memory).resolve()
@@ -114,32 +187,48 @@ def sign(args=None):
         print(f"Not a memory-index tree (no manifests/ directory found): {memory}", file=sys.stderr)
         return 1
 
-    # Advisory lock closing the gap between reading the current revision and
-    # writing the next one: without it, two concurrent `sign` calls on the
-    # same machine could both read revision N and both believe they're clear
-    # to write N+1, even with matching --expect-revision. os.O_EXCL creation
-    # is atomic at the OS level, so only one caller ever wins it.
-    lock_path = memory / "manifests" / ".sign.lock"
-    try:
-        lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        print(
-            f"Another sign is already in progress on this tree ({lock_path} exists). "
-            "If nothing is actually running, a previous sign may have crashed — "
-            "remove the lock file and retry.",
-            file=sys.stderr,
-        )
+    lock_path = _acquire_sign_lock(memory)
+    if lock_path is None:
         return 1
 
     try:
-        os.close(lock_fd)
-
         try:
-            current_revision = read_revision(memory)
+            previous = read_manifest(memory)
         except ValueError as exc:
             print(f"Refusing to sign: {exc}", file=sys.stderr)
             return 1
 
+        # revision and tree_id are carried forward from the current manifest,
+        # so they must be authentic before they're signed again: otherwise
+        # anyone without the key could edit either and have the next
+        # legitimate sign bless it. Only the manifest's own recorded contents
+        # are checked here, not the files on disk -- those are expected to
+        # have changed, since re-hashing them is what sign is for.
+        if get_key() is not None:
+            recorded = previous.get("signature") if previous else None
+            if recorded is None:
+                if not parsed.adopt_unsigned:
+                    state = "missing" if previous is None else "unsigned"
+                    print(
+                        f"Refusing to sign: the current manifest is {state}, so its revision and "
+                        "tree_id can't be authenticated (a stripped signature looks the same). "
+                        "If this tree was created without a key, pass --adopt-unsigned once to "
+                        "sign it as-is.",
+                        file=sys.stderr,
+                    )
+                    return 1
+            else:
+                check = verify_signature(previous)
+                if not check["ok"]:
+                    print(
+                        f"Refusing to sign: the current manifest failed authentication "
+                        f"({check['reason']}). Signing now would carry forward a revision and "
+                        "tree_id nobody verified.",
+                        file=sys.stderr,
+                    )
+                    return 1
+
+        current_revision = previous.get("revision", 0) if previous else 0
         if parsed.expect_revision is not None and current_revision != parsed.expect_revision:
             print(
                 f"Refusing to sign: expected revision {parsed.expect_revision}, found "
@@ -149,14 +238,77 @@ def sign(args=None):
             )
             return 1
 
-        manifest = build_manifest(memory, revision=current_revision + 1)
-        sig = sign_files_canonical(manifest["files"])
-        if sig:
-            manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
-            print("Manifest signed with KIMI_MEMORY_KEY.")
-        else:
-            print("KIMI_MEMORY_KEY not set; manifest generated without signature.")
-        _write_manifest_atomic(memory / "manifests" / "manifest.json", manifest)
+        _write_signed_manifest(memory, current_revision + 1, recorded_tree_id(previous))
+        return 0
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
+def migrate(args=None):
+    parser = argparse.ArgumentParser(
+        description=(
+            "One-time upgrade of a tree signed with the legacy v1 format to v2. Verifies "
+            "the tree fully under v1 first. v1 never covered revision, so the recorded "
+            "revision is carried forward unauthenticated: only migrate a tree you trust "
+            "hasn't been downgraded from v2."
+        )
+    )
+    parser.add_argument("memory", help="Path to .memory/ directory")
+    parsed = parser.parse_args(args)
+
+    memory = Path(parsed.memory).resolve()
+    if not (memory / "manifests").is_dir():
+        print(f"Not a memory-index tree (no manifests/ directory found): {memory}", file=sys.stderr)
+        return 1
+    if get_key() is None:
+        print("Cannot migrate: KIMI_MEMORY_KEY is not set.", file=sys.stderr)
+        return 1
+
+    lock_path = _acquire_sign_lock(memory)
+    if lock_path is None:
+        return 1
+
+    try:
+        try:
+            previous = read_manifest(memory)
+        except ValueError as exc:
+            print(f"Refusing to migrate: {exc}", file=sys.stderr)
+            return 1
+        if previous is None:
+            print("Refusing to migrate: no manifest found.", file=sys.stderr)
+            return 1
+
+        recorded = previous.get("signature")
+        alg = recorded.get("alg") if isinstance(recorded, dict) else None
+        if alg == V2_ALG:
+            print("Already on signature format v2; nothing to migrate.")
+            return 0
+        if alg != V1_ALG:
+            state = "unsigned" if recorded is None else f"signed with {alg!r}"
+            print(
+                "Refusing to migrate: only a manifest with a legacy v1 signature can be "
+                f"migrated, and this one is {state}. "
+                "For an unsigned tree, use memory-index-sign --adopt-unsigned.",
+                file=sys.stderr,
+            )
+            return 1
+
+        result = verify_manifest(memory, allow_legacy=True)
+        if not result["ok"]:
+            print("Refusing to migrate: the tree doesn't verify under its v1 signature.", file=sys.stderr)
+            _report_verify_failures(result)
+            return 1
+
+        revision = previous.get("revision", 0)
+        print(
+            f"Warning: v1 signatures never covered revision, so revision {revision} is being "
+            "carried forward unauthenticated.",
+            file=sys.stderr,
+        )
+        # No v1 tool ever wrote a tree_id, so one present on a v1 manifest
+        # wasn't put there by a signer; don't carry it into a v2 signature.
+        _write_signed_manifest(memory, revision + 1, None)
+        print("Migrated to signature format v2.")
         return 0
     finally:
         lock_path.unlink(missing_ok=True)
@@ -300,7 +452,7 @@ if __name__ == "__main__":
     print(
         "This module has no single entry point — run one of the installed "
         "commands instead: memory-index-init, memory-index-verify, "
-        "memory-index-sign, memory-index-registry-scan/-list/-search/-diff.",
+        "memory-index-sign, memory-index-migrate, memory-index-registry-scan/-list/-search/-diff.",
         file=sys.stderr,
     )
     sys.exit(2)
