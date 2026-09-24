@@ -1,10 +1,11 @@
 """Tests for the cross-project registry."""
 
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from memory_index_system import registry
-from memory_index_system.cli import init, registry_list, registry_scan, registry_search
+from memory_index_system.cli import init, registry_diff, registry_list, registry_scan, registry_search
 
 
 def make_project(base: Path, name: str, charter_name: str | None = None) -> Path:
@@ -122,4 +123,88 @@ def test_registry_search_cli(capsys):
         assert "findable-project" in out
 
         rc = registry_search(["no-such-thing", "--registry-dir", str(registry_dir)])
+        assert rc == 1
+
+
+def test_is_stale_fresh_entry_is_not_stale():
+    entry = {"last_synced": datetime.now(timezone.utc).isoformat()}
+    assert registry.is_stale(entry, stale_after_days=30) is False
+
+
+def test_is_stale_old_entry_is_stale():
+    old = datetime.now(timezone.utc) - timedelta(days=45)
+    entry = {"last_synced": old.isoformat()}
+    assert registry.is_stale(entry, stale_after_days=30) is True
+
+
+def test_is_stale_missing_timestamp_is_stale():
+    assert registry.is_stale({}) is True
+
+
+def test_registry_list_marks_stale_entries(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        registry_dir = Path(tmp) / "registry"
+        old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+        fresh = datetime.now(timezone.utc).isoformat()
+        reg = {
+            "version": "1.0",
+            "updated": fresh,
+            "projects": [
+                {"id": "old-proj", "name": "Old", "path": "/old", "last_synced": old},
+                {"id": "fresh-proj", "name": "Fresh", "path": "/fresh", "last_synced": fresh},
+            ],
+        }
+        registry.save_registry(reg, registry_dir)
+
+        rc = registry_list(["--registry-dir", str(registry_dir), "--stale-days", "30"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = {line.split("\t")[0]: line for line in out.strip().splitlines()}
+        assert lines["[STALE] old-proj"].startswith("[STALE]")
+        assert not lines["fresh-proj"].startswith("[STALE]")
+
+
+def test_registry_diff_reports_no_changes_when_untouched(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "projects"
+        root.mkdir()
+        memory = make_project(root, "diff-proj")
+        registry_dir = Path(tmp) / "registry"
+        registry_scan([str(root), "--registry-dir", str(registry_dir)])
+
+        rc = registry_diff([str(memory), "--registry-dir", str(registry_dir)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "No changes since last scan." in out
+
+
+def test_registry_diff_shows_unified_diff_after_edit(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "projects"
+        root.mkdir()
+        memory = make_project(root, "diff-proj2")
+        registry_dir = Path(tmp) / "registry"
+        registry_scan([str(root), "--registry-dir", str(registry_dir)])
+
+        charter_path = memory / "identity" / "project-charter.md"
+        charter_path.write_text(
+            charter_path.read_text(encoding="utf-8").replace("My Project", "Renamed Project"),
+            encoding="utf-8",
+        )
+
+        rc = registry_diff([str(memory), "--registry-dir", str(registry_dir)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "-My Project" in out
+        assert "+Renamed Project" in out
+
+
+def test_registry_diff_unknown_project_fails(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "projects"
+        root.mkdir()
+        memory = make_project(root, "unregistered-proj")
+        registry_dir = Path(tmp) / "registry"  # never scanned
+
+        rc = registry_diff([str(memory), "--registry-dir", str(registry_dir)])
         assert rc == 1

@@ -28,6 +28,7 @@ DEFAULT_REGISTRY_DIR = Path.home() / ".memory-registry"
 REGISTRY_FILENAME = "registry.json"
 SCAN_ROOTS_FILENAME = "scan-roots.json"
 DEFAULT_MAX_DEPTH = 6
+DEFAULT_STALE_DAYS = 30
 SKIP_DIR_NAMES = {".git", ".venv", "venv", "node_modules", "__pycache__", ".memory-registry"}
 SUMMARY_CHARS = 250
 CHARTER_NAME_PLACEHOLDER = "My Project"
@@ -158,6 +159,20 @@ def save_scan_roots(roots: List[Path], registry_dir: Path = DEFAULT_REGISTRY_DIR
     combined = sorted({str(Path(p).resolve()) for p in [*existing, *roots]})
     path.write_text(json.dumps({"roots": combined}, indent=2), encoding="utf-8")
     return path
+
+
+def is_stale(entry: Dict, stale_after_days: int = DEFAULT_STALE_DAYS, now: Optional[datetime] = None) -> bool:
+    """A stale entry hasn't been rescanned recently enough to trust its identity_summary as current."""
+    last_synced = entry.get("last_synced")
+    if not last_synced:
+        return True
+    try:
+        synced_at = datetime.fromisoformat(last_synced)
+    except ValueError:
+        return True
+    if now is None:
+        now = datetime.now(timezone.utc)
+    return (now - synced_at).total_seconds() > stale_after_days * 86400
 
 
 def search_registry(registry: Dict, query: Optional[str] = None, tag: Optional[str] = None) -> List[Dict]:
