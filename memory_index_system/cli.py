@@ -10,7 +10,7 @@ from . import __version__
 from .crypto import sign_files_canonical
 from .manifest import build_manifest, verify_manifest
 
-TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / ".memory"
+TEMPLATE_DIR = Path(__file__).resolve().parent / "templates" / ".memory"
 
 
 def init(args=None):

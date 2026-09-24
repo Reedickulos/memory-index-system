@@ -40,3 +40,32 @@ jobs:
           memory-index-verify /tmp/demo-project-signed/.memory
         env:
           KIMI_MEMORY_KEY: ci-test-key
+
+  build-and-install:
+    # A real (non-editable) install is a different code path than the `pip
+    # install -e .` used above: it's what actually catches package-data
+    # bugs (e.g. templates/ not shipping in the wheel), which editable
+    # installs mask because they keep the source tree intact.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+
+      - name: Check package metadata
+        run: twine check dist/*
+
+      - name: Install the built wheel (non-editable) and smoke-test it
+        run: |
+          python -m venv /tmp/install-test-venv
+          /tmp/install-test-venv/bin/pip install dist/*.whl
+          /tmp/install-test-venv/bin/memory-index-init /tmp/install-test-project
+          /tmp/install-test-venv/bin/memory-index-verify /tmp/install-test-project/.memory
