@@ -40,3 +40,9 @@ jobs:
           memory-index-verify /tmp/demo-project-signed/.memory
         env:
           KIMI_MEMORY_KEY: ci-test-key
+
+      - name: Test registry scan/list/search
+        run: |
+          memory-index-registry-scan /tmp/demo-project /tmp/demo-project-signed --registry-dir /tmp/demo-registry
+          memory-index-registry-list --registry-dir /tmp/demo-registry
+          memory-index-registry-search demo --registry-dir /tmp/demo-registry

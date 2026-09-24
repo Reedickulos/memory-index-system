@@ -6,7 +6,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import __version__
+from . import __version__, registry
 from .crypto import sign_files_canonical
 from .manifest import build_manifest, verify_manifest
 
@@ -79,6 +79,87 @@ def sign(args=None):
     (memory / "manifests" / "manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
+    return 0
+
+
+def registry_scan(args=None):
+    parser = argparse.ArgumentParser(
+        description="Scan filesystem roots for .memory/ trees and (re)build the registry."
+    )
+    parser.add_argument(
+        "roots", nargs="*", help="Directories to scan, in addition to any saved scan roots"
+    )
+    parser.add_argument(
+        "--save-roots",
+        action="store_true",
+        help="Remember the given roots for future scans (writes scan-roots.json)",
+    )
+    parser.add_argument(
+        "--registry-dir",
+        default=str(registry.DEFAULT_REGISTRY_DIR),
+        help="Registry directory (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=registry.DEFAULT_MAX_DEPTH,
+        help="Maximum directory depth to descend while scanning (default: %(default)s)",
+    )
+    parsed = parser.parse_args(args)
+
+    registry_dir = Path(parsed.registry_dir)
+    cli_roots = [Path(r) for r in parsed.roots]
+    all_roots = registry.load_scan_roots(registry_dir) + cli_roots
+
+    if not all_roots:
+        print(
+            "No roots to scan. Pass one or more directories, optionally with "
+            "--save-roots to remember them for next time.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if parsed.save_roots and cli_roots:
+        registry.save_scan_roots(cli_roots, registry_dir)
+
+    built = registry.build_registry(all_roots, max_depth=parsed.max_depth)
+    path = registry.save_registry(built, registry_dir)
+    print(f"Indexed {len(built['projects'])} project(s) into {path}")
+    return 0
+
+
+def registry_list(args=None):
+    parser = argparse.ArgumentParser(description="List projects currently in the registry.")
+    parser.add_argument("--registry-dir", default=str(registry.DEFAULT_REGISTRY_DIR))
+    parsed = parser.parse_args(args)
+
+    reg = registry.load_registry(Path(parsed.registry_dir))
+    projects = reg.get("projects", [])
+    if not projects:
+        print("Registry is empty. Run memory-index-registry-scan first.", file=sys.stderr)
+        return 1
+    for p in projects:
+        print(f"{p['id']}\t{p['name']}\t{p['path']}")
+    return 0
+
+
+def registry_search(args=None):
+    parser = argparse.ArgumentParser(description="Search the registry by text and/or tag.")
+    parser.add_argument("query", nargs="?", help="Text to search for in name/summary/identity files")
+    parser.add_argument("--tag", help="Filter to projects with this tag")
+    parser.add_argument("--registry-dir", default=str(registry.DEFAULT_REGISTRY_DIR))
+    parsed = parser.parse_args(args)
+
+    if not parsed.query and not parsed.tag:
+        parser.error("provide a query, --tag, or both")
+
+    reg = registry.load_registry(Path(parsed.registry_dir))
+    results = registry.search_registry(reg, query=parsed.query, tag=parsed.tag)
+    if not results:
+        print("No matches.")
+        return 1
+    for p in results:
+        print(f"{p['id']}\t{p['name']}\t{p['path']}")
     return 0
 
 
