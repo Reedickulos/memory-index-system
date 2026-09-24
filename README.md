@@ -47,6 +47,14 @@ memory-index-verify ./my-research-project/.memory
 
 # Re-sign after edits (requires KIMI_MEMORY_KEY env var)
 memory-index-sign ./my-research-project/.memory
+
+# Index every .memory/ tree under a directory into a local, cross-project registry
+memory-index-registry-scan ~/projects --save-roots
+memory-index-registry-list
+memory-index-registry-search "ledger continuity"
+
+# See what changed in a project's identity files since the last scan
+memory-index-registry-diff ./my-research-project/.memory
 ```
 
 Your project now has a `.memory/` directory:
@@ -80,6 +88,26 @@ Plus `manifests/` for integrity and `scripts/` for automation.
 
 ---
 
+## Cross-project registry
+
+A single project's `.memory/` tree answers "what does this project know?" The
+registry answers "what projects exist, and which one has what I need?" —
+useful before starting work in an unfamiliar project, or when picking up
+where a different agent left off elsewhere on disk.
+
+`memory-index-registry-scan` walks one or more directories, finds every
+initialized `.memory/` tree (one with a `manifests/manifest.json`), and
+writes a local index to `~/.memory-registry/registry.json`. Each entry holds
+only what the project's `identity/` layer already publishes — its charter,
+its claim boundary, and a hash of its manifest — never the contents of
+`episodic/`, `semantic/`, or `procedural/`. `--save-roots` remembers the
+scanned directories in `~/.memory-registry/scan-roots.json` so a later
+`memory-index-registry-scan` with no arguments rescans the same places.
+
+See [Registry Spec](docs/registry-spec.md) for the schema.
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -106,10 +134,12 @@ graph TD
 
 ## Documentation
 
+- [Protocol (v1)](docs/PROTOCOL.md) — what makes a `.memory/` tree or another tool compatible with this one, independent of language or implementation
 - [Overview](docs/overview.md)
 - [Architecture](docs/architecture.md)
 - [Agent Protocol](docs/agent-protocol.md)
 - [Manifest Spec](docs/manifest-spec.md)
+- [Registry Spec](docs/registry-spec.md)
 - [FAQ](docs/faq.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
