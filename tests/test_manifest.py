@@ -214,3 +214,44 @@ def test_init_excludes_pycache_from_bundled_templates(monkeypatch):
 
         manifest = json.loads((memory / "manifests" / "manifest.json").read_text(encoding="utf-8"))
         assert not any("__pycache__" in entry["path"] or entry["path"].endswith(".pyc") for entry in manifest["files"])
+
+
+def test_verify_on_nonexistent_path_fails_cleanly(capsys):
+    rc = run_verify(Path("/definitely/does/not/exist/xyz") / ".memory")
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Cannot verify" in err
+
+
+def test_sign_on_nonexistent_path_fails_cleanly(capsys):
+    rc = sign([str(Path("/definitely/does/not/exist/xyz") / ".memory")])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Not a memory-index tree" in err
+
+
+def test_build_manifest_ignores_os_and_editor_artifacts():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+
+        (memory / ".DS_Store").write_bytes(b"mac metadata")
+        (memory / "Thumbs.db").write_bytes(b"windows metadata")
+        (memory / "identity" / "draft.md.tmp").write_text("scratch", encoding="utf-8")
+        pycache = memory / "scripts" / "__pycache__"
+        pycache.mkdir()
+        (pycache / "verify-manifest.cpython-313.pyc").write_bytes(b"bytecode")
+
+        run_sign(memory)
+
+        manifest = json.loads((memory / "manifests" / "manifest.json").read_text(encoding="utf-8"))
+        paths = {entry["path"] for entry in manifest["files"]}
+        assert not any(
+            name in path or path.endswith((".tmp", ".pyc")) or "__pycache__" in path
+            for path in paths
+            for name in (".DS_Store", "Thumbs.db")
+        )
+        # a real, legitimate edit is still tracked
+        assert "identity/draft.md.tmp" not in paths

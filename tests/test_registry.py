@@ -8,17 +8,22 @@ from memory_index_system import registry
 from memory_index_system.cli import init, registry_diff, registry_list, registry_scan, registry_search
 
 
-def make_project(base: Path, name: str, charter_name: str | None = None) -> Path:
+def make_project(
+    base: Path, name: str, charter_name: str | None = None, tags: str | None = None
+) -> Path:
     target = base / name
     target.mkdir(parents=True)
     init([str(target)])
+    charter_path = target / ".memory" / "identity" / "project-charter.md"
+    text = charter_path.read_text(encoding="utf-8")
     if charter_name:
-        charter_path = target / ".memory" / "identity" / "project-charter.md"
-        text = charter_path.read_text(encoding="utf-8")
+        text = text.replace("## Name\n\nMy Project", f"## Name\n\n{charter_name}")
+    if tags is not None:
         text = text.replace(
-            "## Name\n\nMy Project", f"## Name\n\n{charter_name}"
+            "## Tags\n\n_Comma-separated, e.g. research, finance, agents. Used by the registry's --tag search._",
+            f"## Tags\n\n{tags}",
         )
-        charter_path.write_text(text, encoding="utf-8")
+    charter_path.write_text(text, encoding="utf-8")
     return target / ".memory"
 
 
@@ -208,3 +213,51 @@ def test_registry_diff_unknown_project_fails(capsys):
 
         rc = registry_diff([str(memory), "--registry-dir", str(registry_dir)])
         assert rc == 1
+
+
+def test_summarize_project_parses_tags_when_filled_in():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        memory = make_project(root, "tagged-proj", tags="research, agents,  finance ")
+        entry = registry.summarize_project(memory)
+        assert entry["tags"] == ["research", "agents", "finance"]
+
+
+def test_summarize_project_tags_empty_when_placeholder_left_unfilled():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        memory = make_project(root, "untagged-proj")  # placeholder Tags text left as-is
+        entry = registry.summarize_project(memory)
+        assert entry["tags"] == []
+
+
+def test_registry_search_by_populated_tag():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "projects"
+        root.mkdir()
+        make_project(root, "finance-proj", tags="finance, ledger")
+        make_project(root, "other-proj", tags="research")
+        registry_dir = Path(tmp) / "registry"
+        registry_scan([str(root), "--registry-dir", str(registry_dir)])
+
+        reg = registry.load_registry(registry_dir)
+        results = registry.search_registry(reg, tag="finance")
+        assert [p["id"] for p in results] == ["finance-proj"]
+
+
+def test_skip_dir_names_includes_common_build_and_editor_dirs():
+    for name in {"dist", "build", ".idea", ".vscode", ".pytest_cache", ".tox", ".cache"}:
+        assert name in registry.SKIP_DIR_NAMES
+
+
+def test_find_memory_trees_does_not_descend_into_skip_dirs():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # a .memory tree nested inside a build/ dir should never be reached
+        nested = root / "proj" / "build" / "nested" / ".memory"
+        nested.mkdir(parents=True)
+        (nested / "manifests").mkdir()
+        (nested / "manifests" / "manifest.json").write_text("{}", encoding="utf-8")
+
+        found = registry.find_memory_trees(root)
+        assert found == []
