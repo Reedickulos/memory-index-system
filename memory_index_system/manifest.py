@@ -31,8 +31,22 @@ def read_revision(root: Path) -> int:
     return int(data.get("revision", 0))
 
 
+IGNORE_DIR_NAMES = {"__pycache__"}
+IGNORE_FILE_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
+IGNORE_FILE_SUFFIXES = (".tmp", ".swp", ".swo", ".pyc")
+
+
+def _is_ignored_file(name: str) -> bool:
+    return name in IGNORE_FILE_NAMES or name.endswith(IGNORE_FILE_SUFFIXES)
+
+
 def build_manifest(root: Path, revision: int = 1) -> Dict:
     """Build a manifest of every file under root except manifests/manifest.json.
+
+    OS/editor artifacts (.DS_Store, Thumbs.db, __pycache__, *.tmp, *.swp, ...)
+    are skipped so they never get hashed into the manifest and cause a false
+    "tampered" or "drifted" result that has nothing to do with actual memory
+    content.
 
     `revision` is a caller-supplied monotonic counter, not something this
     function infers — see cli.sign()'s --expect-revision for how it's used
@@ -40,8 +54,11 @@ def build_manifest(root: Path, revision: int = 1) -> Dict:
     """
     root = root.resolve()
     entries: List[Dict[str, str]] = []
-    for dirpath, _dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIR_NAMES]
         for fn in filenames:
+            if _is_ignored_file(fn):
+                continue
             path = Path(dirpath) / fn
             rel = path.relative_to(root).as_posix()
             if rel == "manifests/manifest.json":

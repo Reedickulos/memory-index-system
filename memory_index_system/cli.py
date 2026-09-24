@@ -47,7 +47,11 @@ def verify(args=None):
     parser.add_argument("memory", help="Path to .memory/ directory")
     parsed = parser.parse_args(args)
 
-    result = verify_manifest(Path(parsed.memory))
+    try:
+        result = verify_manifest(Path(parsed.memory))
+    except FileNotFoundError as exc:
+        print(f"Cannot verify: {exc}", file=sys.stderr)
+        return 1
     signature = result["signature"]
 
     if result["ok"]:
@@ -83,6 +87,10 @@ def sign(args=None):
     parsed = parser.parse_args(args)
 
     memory = Path(parsed.memory).resolve()
+    if not (memory / "manifests").is_dir():
+        print(f"Not a memory-index tree (no manifests/ directory found): {memory}", file=sys.stderr)
+        return 1
+
     current_revision = read_revision(memory)
 
     if parsed.expect_revision is not None and current_revision != parsed.expect_revision:
