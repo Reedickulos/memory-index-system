@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 jobs:
   test:
@@ -33,3 +33,10 @@ jobs:
         run: |
           memory-index-init /tmp/demo-project
           memory-index-verify /tmp/demo-project/.memory
+
+      - name: Test CLI init/verify with a signing key
+        run: |
+          memory-index-init /tmp/demo-project-signed
+          memory-index-verify /tmp/demo-project-signed/.memory
+        env:
+          KIMI_MEMORY_KEY: ci-test-key

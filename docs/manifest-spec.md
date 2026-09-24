@@ -58,3 +58,5 @@ Lists every file in the package and its SHA-256 hash.
 ### Signature
 
 If `KIMI_MEMORY_KEY` is set, the manifest is signed over the canonical JSON of the `files` array. The signature object is appended after signing.
+
+`memory-index-verify` checks this signature, not just the file hashes: hashes alone only catch a file that drifted from what `manifest.json` records, not a `manifest.json` that was edited to match a tampered file. If a `signature` field is present, verification requires `KIMI_MEMORY_KEY` to reproduce it and fails otherwise. A manifest with no `signature` field verifies on hashes alone and prints a warning that it has no protection against a directly edited manifest.

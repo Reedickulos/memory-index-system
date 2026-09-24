@@ -33,7 +33,7 @@ def main():
     manifest = {
         "project": "Memory Index System project",
         "generated": datetime.now(timezone.utc).isoformat(),
-        "generator": "memory-index-system",
+        "generator": "memory-index-system 0.1.0",
         "file_count": len(entries),
         "files": entries,
     }
