@@ -19,8 +19,25 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def build_manifest(root: Path) -> Dict:
-    """Build a manifest of every file under root except manifests/manifest.json."""
+def read_revision(root: Path) -> int:
+    """Return the revision recorded in root's manifest.json, or 0 if there isn't one yet."""
+    manifest_path = root / "manifests" / "manifest.json"
+    if not manifest_path.exists():
+        return 0
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return 0
+    return int(data.get("revision", 0))
+
+
+def build_manifest(root: Path, revision: int = 1) -> Dict:
+    """Build a manifest of every file under root except manifests/manifest.json.
+
+    `revision` is a caller-supplied monotonic counter, not something this
+    function infers — see cli.sign()'s --expect-revision for how it's used
+    as an optimistic-concurrency check between agents editing the same tree.
+    """
     root = root.resolve()
     entries: List[Dict[str, str]] = []
     for dirpath, _dirnames, filenames in os.walk(root):
@@ -35,6 +52,7 @@ def build_manifest(root: Path) -> Dict:
         "project": "Memory Index System project",
         "generated": _now_iso(),
         "generator": f"memory-index-system {__version__}",
+        "revision": revision,
         "file_count": len(entries),
         "files": entries,
     }
