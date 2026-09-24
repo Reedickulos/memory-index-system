@@ -24,7 +24,11 @@ def init(args=None):
         print(f"Memory tree already exists: {memory}", file=sys.stderr)
         return 1
 
-    shutil.copytree(TEMPLATE_DIR, memory)
+    # A real (non-editable) install can get its bundled templates/*.py
+    # byte-compiled by pip; without this, copytree would pull any
+    # __pycache__ into every new tree and build_manifest would hash it,
+    # making verify fail later for reasons unrelated to actual content.
+    shutil.copytree(TEMPLATE_DIR, memory, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     # Generate initial manifest
     manifest = build_manifest(memory)
     sig = sign_files_canonical(manifest["files"])
