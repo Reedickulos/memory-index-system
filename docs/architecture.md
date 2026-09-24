@@ -57,4 +57,4 @@ The project’s self-model. This is where alignment lives:
 - `manifests/manifest.json` lists every file and its SHA-256 hash.
 - `manifests/initiation-order.json` tells an agent which files to read first.
 - `scripts/verify-manifest.py` re-computes hashes and reports mismatches.
-- `scripts/sign-manifest.py` rewrites the manifest and appends an HMAC-SHA256 signature if `KIMI_MEMORY_KEY` is set.
+- `scripts/sign-manifest.py` rewrites the manifest and appends an HMAC-SHA256 signature if `MEMORY_INDEX_KEY` is set.

@@ -75,6 +75,21 @@ def read_manifest(root: Path):
     return data
 
 
+def signing_key():
+    """MEMORY_INDEX_KEY, falling back to the deprecated KIMI_MEMORY_KEY so
+    existing setups keep working (with a warning)."""
+    key = os.environ.get("MEMORY_INDEX_KEY")
+    legacy = os.environ.get("KIMI_MEMORY_KEY")
+    if key:
+        if legacy and legacy != key:
+            print("Warning: KIMI_MEMORY_KEY is set to a different value and is ignored; MEMORY_INDEX_KEY takes precedence.", file=sys.stderr)
+        return key
+    if legacy:
+        print("Warning: KIMI_MEMORY_KEY is deprecated; set MEMORY_INDEX_KEY instead (the old name still works for now).", file=sys.stderr)
+        return legacy
+    return None
+
+
 def sign_manifest_v2(key: str, revision, tree_id, files) -> str:
     payload = {"v": 2, "revision": revision, "tree_id": tree_id, "files": files}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -152,7 +167,7 @@ def main():
             print(f"Refusing to sign: {exc}", file=sys.stderr)
             return 1
 
-        key = os.environ.get("KIMI_MEMORY_KEY")
+        key = signing_key()
         if key:
             error = authentication_error(previous, key, adopt_unsigned)
             if error:
@@ -160,7 +175,7 @@ def main():
                 return 1
         elif previous is not None and previous.get("signature") is not None:
             print(
-                "Refusing to sign: the current manifest is signed, but KIMI_MEMORY_KEY is not "
+                "Refusing to sign: the current manifest is signed, but MEMORY_INDEX_KEY is not "
                 "set. Writing it back unsigned would strip its signature. Set the key and retry.",
                 file=sys.stderr,
             )
@@ -195,7 +210,7 @@ def main():
             manifest["signature"] = {"alg": "HMAC-SHA256-v2", "value": sig}
             print("Manifest signed.")
         else:
-            print("KIMI_MEMORY_KEY not set; manifest generated without signature.")
+            print("MEMORY_INDEX_KEY not set; manifest generated without signature.")
 
         write_manifest_atomic(root / "manifests" / "manifest.json", manifest)
         return 0

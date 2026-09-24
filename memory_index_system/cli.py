@@ -194,9 +194,9 @@ def _write_signed_manifest(memory: Path, revision: int, tree_id) -> bool:
     sig = sign_manifest_v2(manifest["revision"], manifest["tree_id"], manifest["files"])
     if sig:
         manifest["signature"] = {"alg": V2_ALG, "value": sig}
-        print("Manifest signed with KIMI_MEMORY_KEY.")
+        print("Manifest signed.")
     else:
-        print("KIMI_MEMORY_KEY not set; manifest generated without signature.")
+        print("MEMORY_INDEX_KEY not set; manifest generated without signature.")
     _write_manifest_atomic(memory / "manifests" / "manifest.json", manifest)
     return not sig or _record_revision(manifest, memory)
 
@@ -217,7 +217,7 @@ def sign(args=None):
         "--adopt-unsigned",
         action="store_true",
         help=(
-            "With KIMI_MEMORY_KEY set, allow signing a tree whose current manifest is "
+            "With MEMORY_INDEX_KEY set, allow signing a tree whose current manifest is "
             "missing or unsigned (e.g. one created before a key existed). Its revision "
             "and tree_id can't be authenticated, so they're taken as-is. Needed once per tree."
         ),
@@ -271,7 +271,7 @@ def sign(args=None):
                     return 1
         elif previous is not None and previous.get("signature") is not None:
             print(
-                "Refusing to sign: the current manifest is signed, but KIMI_MEMORY_KEY is not "
+                "Refusing to sign: the current manifest is signed, but MEMORY_INDEX_KEY is not "
                 "set. Writing it back unsigned would strip its signature. Set the key and retry.",
                 file=sys.stderr,
             )
@@ -319,7 +319,7 @@ def migrate(args=None):
         print(f"Not a memory-index tree (no manifests/ directory found): {memory}", file=sys.stderr)
         return 1
     if get_key() is None:
-        print("Cannot migrate: KIMI_MEMORY_KEY is not set.", file=sys.stderr)
+        print("Cannot migrate: MEMORY_INDEX_KEY is not set.", file=sys.stderr)
         return 1
 
     lock_path = _acquire_sign_lock(memory)

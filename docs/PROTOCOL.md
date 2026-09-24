@@ -87,7 +87,7 @@ completely different digest:
    canonical = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
    ```
 3. Compute `HMAC-SHA256(key, canonical)` where `key` is the shared secret
-   (this implementation reads it from the `KIMI_MEMORY_KEY` environment
+   (this implementation reads it from the `MEMORY_INDEX_KEY` environment
    variable) encoded as UTF-8 bytes. Render the digest as lowercase hex.
 4. Store it as `{"alg": "HMAC-SHA256", "value": "<hex digest>"}` under the
    manifest's `signature` key.

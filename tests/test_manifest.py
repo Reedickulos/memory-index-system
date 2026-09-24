@@ -73,7 +73,7 @@ def test_sign_with_key_adds_signature():
         target = Path(tmp) / "proj"
         target.mkdir()
         run_init(target)
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             assert sign([str(target / ".memory"), "--adopt-unsigned"]) == 0
             manifest = json.loads(
@@ -82,19 +82,19 @@ def test_sign_with_key_adds_signature():
             assert "signature" in manifest
             assert manifest["signature"]["alg"] == "HMAC-SHA256-v2"
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
 
 
 def test_verify_passes_with_correct_signature():
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "proj"
         target.mkdir()
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             run_init(target)
             assert run_verify(target / ".memory") == 0
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
 
 
 def test_verify_fails_on_tampered_file_with_patched_hash():
@@ -102,7 +102,7 @@ def test_verify_fails_on_tampered_file_with_patched_hash():
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "proj"
         target.mkdir()
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             run_init(target)
             memory = target / ".memory"
@@ -119,18 +119,18 @@ def test_verify_fails_on_tampered_file_with_patched_hash():
 
             assert run_verify(memory) == 1
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
 
 
 def test_verify_fails_on_signed_manifest_without_key():
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "proj"
         target.mkdir()
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             run_init(target)
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
         assert run_verify(target / ".memory") == 1
 
 
@@ -138,7 +138,7 @@ def test_verify_passes_unsigned_manifest_with_warning():
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "proj"
         target.mkdir()
-        run_init(target)  # no KIMI_MEMORY_KEY set
+        run_init(target)  # no MEMORY_INDEX_KEY set
         assert run_verify(target / ".memory") == 0
 
 
@@ -267,7 +267,7 @@ def test_verify_fails_when_signature_stripped_but_key_available():
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "proj"
         target.mkdir()
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             run_init(target)
             memory = target / ".memory"
@@ -278,7 +278,7 @@ def test_verify_fails_when_signature_stripped_but_key_available():
 
             assert run_verify(memory) == 1
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
 
 
 def test_verify_fails_on_untracked_file():
@@ -481,7 +481,7 @@ def test_v2_signature_fails_if_revision_tampered_alone():
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "proj"
         target.mkdir()
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             run_init(target)
             memory = target / ".memory"
@@ -492,14 +492,14 @@ def test_v2_signature_fails_if_revision_tampered_alone():
 
             assert run_verify(memory) == 1
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
 
 
 def test_v2_signature_fails_if_tree_id_tampered_alone():
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "proj"
         target.mkdir()
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             run_init(target)
             memory = target / ".memory"
@@ -510,14 +510,14 @@ def test_v2_signature_fails_if_tree_id_tampered_alone():
 
             assert run_verify(memory) == 1
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
 
 
 @pytest.fixture
 def signing_key():
-    os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+    os.environ["MEMORY_INDEX_KEY"] = "test-secret"
     yield
-    del os.environ["KIMI_MEMORY_KEY"]
+    del os.environ["MEMORY_INDEX_KEY"]
 
 
 @pytest.fixture
@@ -611,7 +611,7 @@ def test_sign_refuses_unsigned_manifest_with_key_unless_adopted(capsys):
         target.mkdir()
         run_init(target)  # no key: unsigned
         memory = target / ".memory"
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             assert run_sign(memory) == 1
             assert "--adopt-unsigned" in capsys.readouterr().err
@@ -622,7 +622,7 @@ def test_sign_refuses_unsigned_manifest_with_key_unless_adopted(capsys):
             assert run_verify(memory) == 0
             assert run_sign(memory) == 0  # authenticated from now on, no flag needed
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
 
 
 def test_sign_refuses_missing_manifest_with_key(signed_tree, capsys):
@@ -711,18 +711,18 @@ def test_migrate_requires_the_key(capsys):
         target.mkdir()
         run_init(target)
         assert migrate([str(target / ".memory")]) == 1
-        assert "KIMI_MEMORY_KEY is not set" in capsys.readouterr().err
+        assert "MEMORY_INDEX_KEY is not set" in capsys.readouterr().err
 
 
 def test_sign_without_key_refuses_to_strip_a_signed_manifest(capsys):
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "proj"
         target.mkdir()
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             run_init(target)
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
         memory = target / ".memory"
         before = _load(memory)
 
@@ -841,3 +841,47 @@ def test_a_held_record_lock_warns_instead_of_failing(signed_tree, isolated_revis
         assert "revision record not updated" in capsys.readouterr().err
     finally:
         lock.unlink()
+
+
+@pytest.fixture
+def fresh_key_warning(monkeypatch):
+    from memory_index_system import crypto
+
+    monkeypatch.setattr(crypto, "_legacy_warning_shown", False)
+    monkeypatch.delenv("MEMORY_INDEX_KEY", raising=False)
+    monkeypatch.delenv("KIMI_MEMORY_KEY", raising=False)
+    return monkeypatch
+
+
+def test_legacy_key_name_still_works_with_a_deprecation_warning(fresh_key_warning, capsys):
+    fresh_key_warning.setenv("KIMI_MEMORY_KEY", "old-name-secret")
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        assert _load(target / ".memory")["signature"]["alg"] == "HMAC-SHA256-v2"
+        assert run_verify(target / ".memory") == 0
+
+        fresh_key_warning.delenv("KIMI_MEMORY_KEY")
+        fresh_key_warning.setenv("MEMORY_INDEX_KEY", "old-name-secret")
+        assert run_verify(target / ".memory") == 0  # same key under the new name
+    err = capsys.readouterr().err
+    assert err.count("KIMI_MEMORY_KEY is deprecated") == 1  # once per process, not per call
+
+
+def test_new_key_name_takes_precedence_over_a_different_legacy_value(fresh_key_warning, capsys):
+    from memory_index_system.crypto import get_key
+
+    fresh_key_warning.setenv("MEMORY_INDEX_KEY", "new")
+    fresh_key_warning.setenv("KIMI_MEMORY_KEY", "old")
+    assert get_key() == b"new"
+    assert "is ignored" in capsys.readouterr().err
+
+
+def test_same_value_under_both_names_is_silent(fresh_key_warning, capsys):
+    from memory_index_system.crypto import get_key
+
+    fresh_key_warning.setenv("MEMORY_INDEX_KEY", "same")
+    fresh_key_warning.setenv("KIMI_MEMORY_KEY", "same")
+    assert get_key() == b"same"
+    assert capsys.readouterr().err == ""
