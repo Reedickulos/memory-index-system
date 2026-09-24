@@ -59,6 +59,21 @@ jobs:
             exit 1
           fi
 
+      - name: Test the standalone in-tree scripts directly
+        # These scripts (templates/.memory/scripts/*.py, copied into every new
+        # tree by init) are intentionally self-contained duplicates of the
+        # package's cli/manifest/crypto logic -- they can't import the package,
+        # since they need to work on a machine that doesn't have it installed.
+        # Nothing above exercises them; run them directly so they can't drift
+        # from the package's behavior unnoticed.
+        run: |
+          memory-index-init /tmp/standalone-demo
+          python /tmp/standalone-demo/.memory/scripts/verify-manifest.py
+          python /tmp/standalone-demo/.memory/scripts/sign-manifest.py
+          python /tmp/standalone-demo/.memory/scripts/verify-manifest.py
+        env:
+          KIMI_MEMORY_KEY: ci-test-key
+
   build-and-install:
     # A real (non-editable) install is a different code path than the `pip
     # install -e .` used above: it's what actually catches package-data
