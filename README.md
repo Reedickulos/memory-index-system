@@ -135,6 +135,7 @@ graph TD
 ## Documentation
 
 - [Protocol (v1)](docs/PROTOCOL.md) — what makes a `.memory/` tree or another tool compatible with this one, independent of language or implementation
+- [Protocol v2](docs/PROTOCOL-v2.md) — current signing format (covers `revision` and a new `tree_id`); a delta on v1, not a replacement
 - [Overview](docs/overview.md)
 - [Architecture](docs/architecture.md)
 - [Agent Protocol](docs/agent-protocol.md)

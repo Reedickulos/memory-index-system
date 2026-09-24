@@ -9,8 +9,8 @@ import sys
 from pathlib import Path
 
 from . import __version__, registry
-from .crypto import sign_files_canonical
-from .manifest import build_manifest, read_revision, verify_manifest
+from .crypto import sign_manifest_v2
+from .manifest import build_manifest, read_revision, read_tree_id, verify_manifest
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates" / ".memory"
 
@@ -51,11 +51,13 @@ def init(args=None):
     # __pycache__ into every new tree and build_manifest would hash it,
     # making verify fail later for reasons unrelated to actual content.
     shutil.copytree(TEMPLATE_DIR, memory, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    # Generate initial manifest
+    # Generate initial manifest. tree_id is freshly minted here (build_manifest
+    # mints one when none is given) -- this is the one place that's correct,
+    # since it's genuinely a new tree; sign() below always reuses the existing one.
     manifest = build_manifest(memory)
-    sig = sign_files_canonical(manifest["files"])
+    sig = sign_manifest_v2(manifest["revision"], manifest["tree_id"], manifest["files"])
     if sig:
-        manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
+        manifest["signature"] = {"alg": "HMAC-SHA256-v2", "value": sig}
     _write_manifest_atomic(memory / "manifests" / "manifest.json", manifest)
     print(f"Initialized memory tree at {memory}")
     return 0
@@ -75,7 +77,7 @@ def verify(args=None):
 
     if result["ok"]:
         print("Manifest verification passed.")
-        if not signature["present"]:
+        if not signature["present"] or signature.get("legacy"):
             print(f"Warning: {signature['reason']}", file=sys.stderr)
         return 0
 
@@ -136,6 +138,7 @@ def sign(args=None):
 
         try:
             current_revision = read_revision(memory)
+            existing_tree_id = read_tree_id(memory)
         except ValueError as exc:
             print(f"Refusing to sign: {exc}", file=sys.stderr)
             return 1
@@ -149,10 +152,16 @@ def sign(args=None):
             )
             return 1
 
-        manifest = build_manifest(memory, revision=current_revision + 1)
-        sig = sign_files_canonical(manifest["files"])
+        if existing_tree_id is None:
+            # A pre-v2 manifest (or one somehow missing tree_id): adopt a
+            # fresh identity now rather than staying on the legacy signature
+            # format forever. Not silent -- this is a real, one-time change.
+            print("No tree_id found on this manifest; minting one now (upgrading to signature format v2).")
+
+        manifest = build_manifest(memory, revision=current_revision + 1, tree_id=existing_tree_id)
+        sig = sign_manifest_v2(manifest["revision"], manifest["tree_id"], manifest["files"])
         if sig:
-            manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
+            manifest["signature"] = {"alg": "HMAC-SHA256-v2", "value": sig}
             print("Manifest signed with KIMI_MEMORY_KEY.")
         else:
             print("KIMI_MEMORY_KEY not set; manifest generated without signature.")

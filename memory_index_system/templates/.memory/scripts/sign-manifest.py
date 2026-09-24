@@ -14,6 +14,7 @@ import hmac
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,6 +68,19 @@ def read_revision(root: Path) -> int:
     return int(data.get("revision", 0))
 
 
+def read_tree_id(root: Path):
+    """Return the recorded tree_id, or None if there isn't one yet (no
+    manifest, or a pre-v2 manifest predating tree_id)."""
+    manifest_path = root / "manifests" / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Manifest is not valid JSON: {manifest_path}") from exc
+    return data.get("tree_id")
+
+
 def write_manifest_atomic(manifest_path: Path, manifest: dict) -> None:
     tmp_path = manifest_path.with_name(manifest_path.name + ".tmp")
     tmp_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -93,9 +107,14 @@ def main():
 
         try:
             revision = read_revision(root) + 1
+            tree_id = read_tree_id(root)
         except ValueError as exc:
             print(f"Refusing to sign: {exc}", file=sys.stderr)
             return 1
+
+        if tree_id is None:
+            tree_id = str(uuid.uuid4())
+            print("No tree_id found on this manifest; minting one now (upgrading to signature format v2).")
 
         entries = [{"path": rel, "sha256": sha256_file(root / rel)} for rel in sorted(walk_files(root))]
 
@@ -104,15 +123,19 @@ def main():
             "generated": datetime.now(timezone.utc).isoformat(),
             "generator": "memory-index-system 0.1.0",
             "revision": revision,
+            "tree_id": tree_id,
             "file_count": len(entries),
             "files": entries,
         }
 
         key = os.environ.get("KIMI_MEMORY_KEY")
         if key:
-            canonical = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            # v2 signing payload covers revision and tree_id in addition to
+            # files -- see crypto.sign_manifest_v2 / docs/PROTOCOL-v2.md.
+            payload = {"v": 2, "revision": revision, "tree_id": tree_id, "files": entries}
+            canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
             sig = hmac.new(key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
-            manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
+            manifest["signature"] = {"alg": "HMAC-SHA256-v2", "value": sig}
             print("Manifest signed.")
         else:
             print("KIMI_MEMORY_KEY not set; manifest generated without signature.")
