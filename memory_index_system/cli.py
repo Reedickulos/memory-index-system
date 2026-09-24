@@ -157,22 +157,18 @@ def sign(args=None):
             # fresh identity now rather than staying on the legacy signature
             # format forever. Not silent -- this is a real, one-time change.
             print("No tree_id found on this manifest; minting one now (upgrading to signature format v2).")
-            # scripts/*.py were copied into this tree at init time and never
-            # touched since -- a tree initialized before v2 existed is still
-            # carrying the old files-only verify-manifest.py, which doesn't
-            # know how to check a v2 signature at all. Left alone, the very
-            # next thing we do (write a v2 signature below) would make that
-            # tree's own bundled verifier reject its own manifest. Refresh
-            # them from the current template so they can check what we're
-            # about to write; the new content gets hashed into this same
-            # manifest below, so it's covered by the signature like anything
-            # else in the tree.
-            shutil.copytree(
-                TEMPLATE_DIR / "scripts",
-                memory / "scripts",
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-                dirs_exist_ok=True,
-            )
+
+        # Unconditional, not gated on the tree_id check above: the bundled
+        # sign-manifest.py can upgrade a tree to v2 (minting tree_id) without
+        # being able to replace its legacy sibling verify-manifest.py, so
+        # "tree_id already present" does not mean the in-tree verifier can
+        # check what we're about to write.
+        shutil.copytree(
+            TEMPLATE_DIR / "scripts",
+            memory / "scripts",
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            dirs_exist_ok=True,
+        )
 
         manifest = build_manifest(memory, revision=current_revision + 1, tree_id=existing_tree_id)
         sig = sign_manifest_v2(manifest["revision"], manifest["tree_id"], manifest["files"])

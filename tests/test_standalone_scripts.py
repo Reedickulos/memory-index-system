@@ -315,3 +315,31 @@ def test_sign_refreshes_legacy_scripts_when_upgrading_tree_to_v2():
 
         result = run_script("verify-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
         assert result.returncode == 0, result.stderr
+
+
+def test_installed_sign_repairs_verifier_after_bundled_sign_already_upgraded_tree():
+    """Bundled sign-manifest.py upgrades first (minting tree_id, writing v2)
+    but can't replace its legacy sibling verifier. The installed sign must
+    still repair it even though tree_id is already present."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        init([str(target)])
+        memory = target / ".memory"
+        downgrade_to_legacy_v1_tree(memory)
+        env = {"KIMI_MEMORY_KEY": "test-secret"}
+
+        assert run_script("sign-manifest.py", memory, env=env).returncode == 0
+        manifest = json.loads((memory / "manifests" / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["tree_id"]
+        assert manifest["signature"]["alg"] == "HMAC-SHA256-v2"
+        assert run_script("verify-manifest.py", memory, env=env).returncode == 1
+
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            assert sign([str(memory)]) == 0
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+
+        result = run_script("verify-manifest.py", memory, env=env)
+        assert result.returncode == 0, result.stderr

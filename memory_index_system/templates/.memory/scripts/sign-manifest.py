@@ -122,8 +122,8 @@ def main():
             # still only checks the old files-only format and will reject the
             # v2 manifest this call is about to write. Run the installed
             # `memory-index-sign` against this tree at least once (it syncs
-            # scripts/ from the current template on this same upgrade path),
-            # or manually replace scripts/verify-manifest.py, to fix that.
+            # scripts/ from the current template on every run), or manually
+            # replace scripts/verify-manifest.py, to fix that.
 
         entries = [{"path": rel, "sha256": sha256_file(root / rel)} for rel in sorted(walk_files(root))]
 
