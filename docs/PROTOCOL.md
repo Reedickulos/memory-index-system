@@ -86,15 +86,48 @@ completely different digest:
 To verify: recompute steps 1–3 with the same key and compare the resulting
 hex digest to `signature.value` using a constant-time comparison
 (`hmac.compare_digest` or equivalent — a naive `==` on secrets leaks timing
-information). A mismatch, or a `signature` field present with no key
-available to check it, MUST be treated as verification failure, not as an
-unsigned tree — those are different states (see manifest-spec.md).
+information). Three states, not two:
+
+| `signature` field | verifier has the key | result |
+|---|---|---|
+| present, matches | yes | pass |
+| present, doesn't match | yes | **fail** |
+| present | no | **fail** — can't check it, so don't assume it's fine |
+| absent | yes | **fail** — a verifier holding the key almost certainly expects signed manifests; a missing signature here is more likely stripped than intentional |
+| absent | no | pass, with a warning — hash checks only, no tamper protection |
+
+Treating "absent signature + key available" as a pass (with only a warning)
+was this protocol's original behavior and is a known-broken design: it lets
+an attacker who edits a file and its manifest entry simply delete the
+`signature` field to bypass detection entirely, indistinguishable from a
+legitimately-never-signed tree.
 
 File-hash checks and signature checks are independent and both required:
 hashes alone don't protect a manifest that's been edited to match a
 tampered file; a signature alone (without also checking hashes) would still
 let a tampered manifest go unnoticed if no one recomputed against disk.
-`memory-index-verify` runs both.
+
+Verification MUST also walk the tree independently (applying the same
+ignore rules as §2) and fail if any file exists on disk that isn't recorded
+in `files` — checking only recorded entries against disk can never detect
+an *added* file, which is the more likely tampering vector for a memory
+tree than modifying an existing one.
+
+A manifest entry's `path` MUST be checked for containment before it's read,
+and the check MUST use the host's own path-resolution semantics — join
+`path` with the tree root, resolve it, and confirm the result still lives
+under the resolved root — rather than pattern-matching the string for a
+leading `/` or a POSIX `..` segment. Pattern-matching against POSIX rules
+alone is not sufficient: on Windows, a value like `C:/Windows/x` or
+`..\..\x` is neither absolute nor contains a `..` component under POSIX
+path rules, but resolving it with the host's actual path class (which is
+what happens when the entry is subsequently read) does escape the tree —
+`root / "C:/Windows/x"` discards `root` entirely on Windows, since joining
+onto an absolute path resets the accumulated path. Validate containment
+with the same path implementation that will perform the real join, not a
+POSIX-specific stand-in for it.
+
+`memory-index-verify` runs all of these checks.
 
 ## 4. Optimistic concurrency (multi-agent edits)
 
@@ -114,6 +147,19 @@ This is optimistic concurrency control, not a merge algorithm — it detects
 a conflict and refuses to clobber it. Resolving the conflict (deciding whose
 edits win, or combining them) is left to the agents or humans involved; this
 protocol does not yet define an automatic merge.
+
+Reading the revision and writing the next one are still two separate steps,
+not one atomic operation — checking `--expect-revision` doesn't by itself
+close the gap between two processes on the same machine both reading the
+same revision before either writes. This implementation narrows that window
+with a local advisory lock (an exclusively-created `manifests/.sign.lock`
+file, held only for the duration of a `sign`) and writes the manifest itself
+atomically (write to a temp file, then rename) so a crash mid-write can
+never leave a corrupt `manifest.json` behind. Neither is a protocol
+requirement — they're implementation-level mitigations for a single
+machine, not a distributed lock — but any implementation should write
+`manifest.json` atomically at minimum, since a half-written file breaks the
+whole tree's verification, not just the writer's own change.
 
 ## 5. The registry
 
@@ -138,3 +184,19 @@ Conformance is about the file formats and algorithms above, not about
 implementing every CLI command this package ships (`registry-diff`,
 staleness flags, etc. are conveniences built on top of a conformant tree,
 not part of what makes a tree conformant).
+
+## 7. Known limitation: no rollback/replay protection
+
+A signature covers `files` (and, per §2, is computed over that array
+exactly as stored) — it does not cover `revision`, and there is no
+mechanism binding a signature to "this is the most recent valid state." A
+complete, validly-signed older manifest together with the files it
+describes can be restored wholesale over a newer state, and verification
+will pass: every hash matches what's recorded, and the signature matches
+what's signed, because both genuinely were valid together at some earlier
+point. Detecting that kind of rollback requires an external reference to
+"the last state I actually saw" (for instance, a caller comparing the
+current manifest's `revision` or hash against one it remembers from a
+previous verify, or the registry's `manifest_hash` field from an earlier
+scan) — nothing in the manifest format itself carries that information yet.
+This is a real, open gap, not an oversight being glossed over.

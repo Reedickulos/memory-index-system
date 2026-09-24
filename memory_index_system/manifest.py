@@ -20,40 +20,75 @@ def sha256_file(path: Path) -> str:
 
 
 def read_revision(root: Path) -> int:
-    """Return the revision recorded in root's manifest.json, or 0 if there isn't one yet."""
+    """Return the revision recorded in root's manifest.json, or 0 if there isn't one yet.
+
+    Raises ValueError if a manifest.json exists but isn't readable/valid JSON —
+    that's corruption, not "no revision yet", and silently treating it as 0
+    would let --expect-revision 0 through and mask the corruption.
+    """
     manifest_path = root / "manifests" / "manifest.json"
     if not manifest_path.exists():
         return 0
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return 0
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Manifest is not valid JSON: {manifest_path}") from exc
+    except OSError as exc:
+        raise ValueError(f"Could not read manifest: {manifest_path} ({exc})") from exc
     return int(data.get("revision", 0))
 
 
 IGNORE_DIR_NAMES = {"__pycache__"}
 IGNORE_FILE_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
 IGNORE_FILE_SUFFIXES = (".tmp", ".swp", ".swo", ".pyc")
+# The exact relative path of cli.sign()'s transient lock file -- NOT a ".lock"
+# suffix rule. A suffix-based ignore would let any real content file that
+# happens to end in .lock (e.g. semantic/injected.lock) bypass both manifest
+# generation and the untracked-file check in verify_manifest below.
+SIGN_LOCK_PATH = "manifests/.sign.lock"
 
 
 def _is_ignored_file(name: str) -> bool:
     return name in IGNORE_FILE_NAMES or name.endswith(IGNORE_FILE_SUFFIXES)
 
 
-def build_manifest(root: Path, revision: int = 1) -> Dict:
-    """Build a manifest of every file under root except manifests/manifest.json.
+def _is_safe_relative_path(root: Path, path_str: str) -> bool:
+    """Reject a manifest entry path that could escape root, by actually
+    joining and resolving it with the host's own Path class and checking
+    containment — not by pattern-matching for '..' or a leading '/'.
 
-    OS/editor artifacts (.DS_Store, Thumbs.db, __pycache__, *.tmp, *.swp, ...)
-    are skipped so they never get hashed into the manifest and cause a false
-    "tampered" or "drifted" result that has nothing to do with actual memory
-    content.
+    Pattern-matching against PurePosixPath rules alone is not enough: on
+    Windows, "C:/Windows/x" and "..\\..\\x" are neither absolute nor
+    contain a POSIX ".." component under PurePosixPath, but `root / path_str`
+    a few lines later uses the *host's* Path class (WindowsPath here), which
+    does treat a drive letter as absolute and a backslash as a separator —
+    so a manifest crafted with either would pass a POSIX-only check and then
+    genuinely escape root once joined and read. Resolving with the same Path
+    class that will actually perform the join guarantees the safety check
+    and the real access agree.
 
-    `revision` is a caller-supplied monotonic counter, not something this
-    function infers — see cli.sign()'s --expect-revision for how it's used
-    as an optimistic-concurrency check between agents editing the same tree.
+    Only used against paths read from a manifest.json (untrusted input from
+    disk) — paths this module generates itself via _walk_files are always
+    already-safe relative POSIX paths under root.
     """
-    root = root.resolve()
-    entries: List[Dict[str, str]] = []
+    if not path_str:
+        return False
+    try:
+        resolved = (root / path_str).resolve()
+    except (OSError, ValueError):
+        return False
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _walk_files(root: Path) -> List[str]:
+    """List every relative POSIX path under root, except manifests/manifest.json,
+    the transient sign lock file, and OS/editor artifacts (.DS_Store, Thumbs.db,
+    __pycache__, *.tmp, *.swp, ...)."""
+    entries: List[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIR_NAMES]
         for fn in filenames:
@@ -61,10 +96,23 @@ def build_manifest(root: Path, revision: int = 1) -> Dict:
                 continue
             path = Path(dirpath) / fn
             rel = path.relative_to(root).as_posix()
-            if rel == "manifests/manifest.json":
+            if rel in ("manifests/manifest.json", SIGN_LOCK_PATH):
                 continue
-            entries.append({"path": rel, "sha256": sha256_file(path)})
-    entries.sort(key=lambda x: x["path"])
+            entries.append(rel)
+    return entries
+
+
+def build_manifest(root: Path, revision: int = 1) -> Dict:
+    """Build a manifest of every file under root except manifests/manifest.json.
+
+    `revision` is a caller-supplied monotonic counter, not something this
+    function infers — see cli.sign()'s --expect-revision for how it's used
+    as an optimistic-concurrency check between agents editing the same tree.
+    """
+    root = root.resolve()
+    entries = [
+        {"path": rel, "sha256": sha256_file(root / rel)} for rel in sorted(_walk_files(root))
+    ]
     return {
         "project": "Memory Index System project",
         "generated": _now_iso(),
@@ -84,14 +132,29 @@ def verify_signature(manifest: Dict) -> Dict:
     what actually detects a manifest that was tampered with as a whole.
     """
     recorded = manifest.get("signature")
+    key = get_key()
+
     if recorded is None:
+        if key is not None:
+            # A verifier holding the key almost certainly expects signed
+            # manifests. An absent signature in that context is much more
+            # likely to mean "stripped after tampering" than "intentionally
+            # unsigned" — someone who genuinely wanted unsigned mode wouldn't
+            # have the key set when verifying.
+            return {
+                "present": False,
+                "ok": False,
+                "reason": (
+                    "no signature found, but a signing key is available — "
+                    "it may have been stripped after tampering"
+                ),
+            }
         return {
             "present": False,
             "ok": True,
             "reason": "unsigned manifest — hash checks only, no protection against an edited manifest.json",
         }
 
-    key = get_key()
     if key is None:
         return {
             "present": True,
@@ -112,31 +175,49 @@ def verify_signature(manifest: Dict) -> Dict:
 
 
 def verify_manifest(root: Path) -> Dict:
-    """Verify every file in manifests/manifest.json against disk, and its signature if present."""
+    """Verify every file in manifests/manifest.json against disk, plus files present
+    on disk but not recorded in the manifest, and the signature if present."""
     root = root.resolve()
     manifest_path = root / "manifests" / "manifest.json"
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found: {manifest_path}")
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        manifest = json.load(f)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Manifest is not valid JSON: {manifest_path}") from exc
 
     failures = []
     missing = []
+    unsafe = []
+    recorded_paths = set()
     for entry in manifest.get("files", []):
-        path = root / entry["path"]
+        entry_path = entry.get("path", "")
+        if not _is_safe_relative_path(root, entry_path):
+            unsafe.append(entry_path)
+            continue
+        recorded_paths.add(entry_path)
+        path = root / entry_path
         if not path.exists():
-            missing.append(entry["path"])
+            missing.append(entry_path)
             continue
         actual = sha256_file(path)
         if actual != entry["sha256"]:
-            failures.append({"path": entry["path"], "expected": entry["sha256"], "actual": actual})
+            failures.append({"path": entry_path, "expected": entry["sha256"], "actual": actual})
+
+    # Files present on disk but never recorded in the manifest are the most
+    # likely form of tampering for a memory tree — an added file that was
+    # simply never signed. Checking recorded entries against disk alone
+    # can't catch this; it requires walking the tree independently too.
+    extra = sorted(set(_walk_files(root)) - recorded_paths)
 
     signature = verify_signature(manifest)
 
     return {
-        "ok": not failures and not missing and signature["ok"],
+        "ok": not failures and not missing and not extra and not unsafe and signature["ok"],
         "failures": failures,
         "missing": missing,
+        "extra": extra,
+        "unsafe": unsafe,
         "signature": signature,
     }
 

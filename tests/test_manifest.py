@@ -3,12 +3,14 @@
 import hashlib
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from memory_index_system.cli import init, sign, verify
+from memory_index_system.manifest import _is_safe_relative_path
 
 
 def run_init(target: Path) -> int:
@@ -255,3 +257,186 @@ def test_build_manifest_ignores_os_and_editor_artifacts():
         )
         # a real, legitimate edit is still tracked
         assert "identity/draft.md.tmp" not in paths
+
+
+def test_verify_fails_when_signature_stripped_but_key_available():
+    """A verifier holding the key almost certainly expects signed manifests --
+    an absent signature in that context should fail, not pass with a warning."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            run_init(target)
+            memory = target / ".memory"
+            manifest_path = memory / "manifests" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            del manifest["signature"]
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+            assert run_verify(memory) == 1
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+
+
+def test_verify_fails_on_untracked_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        (memory / "semantic" / "injected.md").write_text("not tracked", encoding="utf-8")
+
+        assert run_verify(memory) == 1
+
+
+def test_verify_rejects_unsafe_manifest_paths():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        manifest_path = memory / "manifests" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"].append({"path": "../../../etc/passwd", "sha256": "a" * 64})
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+        assert run_verify(memory) == 1
+
+
+def test_verify_fails_cleanly_on_corrupt_manifest_json(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        (memory / "manifests" / "manifest.json").write_text("{not valid json", encoding="utf-8")
+
+        assert run_verify(memory) == 1
+        assert "not valid JSON" in capsys.readouterr().err
+
+
+def test_sign_fails_cleanly_on_corrupt_manifest_json(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        (memory / "manifests" / "manifest.json").write_text("{not valid json", encoding="utf-8")
+
+        assert run_sign(memory) == 1
+        assert "not valid JSON" in capsys.readouterr().err
+
+
+def test_read_revision_raises_on_corrupt_manifest():
+    from memory_index_system.manifest import read_revision
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        (memory / "manifests" / "manifest.json").write_text("{not valid json", encoding="utf-8")
+
+        with pytest.raises(ValueError):
+            read_revision(memory)
+
+
+def test_sign_refuses_when_lock_file_present(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        lock_path = memory / "manifests" / ".sign.lock"
+        lock_path.write_bytes(b"")
+
+        rc = run_sign(memory)
+        assert rc == 1
+        assert "already in progress" in capsys.readouterr().err
+        # the refused attempt must not have touched the manifest's revision
+        manifest = json.loads((memory / "manifests" / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["revision"] == 1
+
+
+def test_sign_cleans_up_its_lock_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        run_sign(memory)
+        assert not (memory / "manifests" / ".sign.lock").exists()
+
+
+def test_sign_does_not_hash_its_own_lock_file():
+    """The .sign.lock file exists on disk while build_manifest walks the tree
+    during sign() -- it must never end up recorded in the manifest itself."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        run_sign(memory)
+        manifest = json.loads((memory / "manifests" / "manifest.json").read_text(encoding="utf-8"))
+        assert not any("sign.lock" in entry["path"] for entry in manifest["files"])
+
+
+def test_verify_fails_on_untracked_file_named_dot_lock():
+    """A real content file that happens to end in .lock must NOT be treated
+    like the transient manifests/.sign.lock -- only that exact path is ignored."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        (memory / "semantic" / "injected.lock").write_text("not tracked", encoding="utf-8")
+
+        assert run_verify(memory) == 1
+
+
+def test_is_safe_relative_path_never_escapes_root_by_construction():
+    """The check must reflect what root / path_str actually resolves to on
+    this host, not POSIX-only assumptions -- so probe it with real
+    resolution rather than asserting specific rejected strings, which would
+    only be meaningful on the platform whose Path class the test runs under.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "proj" / ".memory"
+        root.mkdir(parents=True)
+        outside = Path(tmp) / "outside.txt"
+        outside.write_text("secret", encoding="utf-8")
+
+        candidates = [
+            "identity/project-charter.md",  # genuinely safe
+            "../../outside.txt",
+            "../outside.txt",
+            "/etc/passwd",
+            "C:/Windows/System32/evil.txt",
+            "C:\\Windows\\evil.txt",
+            "..\\..\\outside.txt",
+        ]
+        for candidate in candidates:
+            safe = _is_safe_relative_path(root, candidate)
+            if safe:
+                # If it was accepted as safe, it MUST actually resolve inside root --
+                # this is the invariant the fix exists to guarantee, checked directly
+                # rather than trusting the function's own answer.
+                resolved = (root / candidate).resolve()
+                resolved.relative_to(root.resolve())  # raises if this assertion is false
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="drive-letter/backslash escape is Windows-specific")
+def test_verify_rejects_windows_drive_and_backslash_paths():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        manifest_path = memory / "manifests" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"].append({"path": "C:/Windows/System32/drivers/etc/hosts", "sha256": "a" * 64})
+        manifest["files"].append({"path": "..\\..\\outside.txt", "sha256": "b" * 64})
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+        assert run_verify(memory) == 1
