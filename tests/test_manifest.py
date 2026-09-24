@@ -255,3 +255,126 @@ def test_build_manifest_ignores_os_and_editor_artifacts():
         )
         # a real, legitimate edit is still tracked
         assert "identity/draft.md.tmp" not in paths
+
+
+def test_verify_fails_when_signature_stripped_but_key_available():
+    """A verifier holding the key almost certainly expects signed manifests --
+    an absent signature in that context should fail, not pass with a warning."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            run_init(target)
+            memory = target / ".memory"
+            manifest_path = memory / "manifests" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            del manifest["signature"]
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+            assert run_verify(memory) == 1
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+
+
+def test_verify_fails_on_untracked_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        (memory / "semantic" / "injected.md").write_text("not tracked", encoding="utf-8")
+
+        assert run_verify(memory) == 1
+
+
+def test_verify_rejects_unsafe_manifest_paths():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        manifest_path = memory / "manifests" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"].append({"path": "../../../etc/passwd", "sha256": "a" * 64})
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+        assert run_verify(memory) == 1
+
+
+def test_verify_fails_cleanly_on_corrupt_manifest_json(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        (memory / "manifests" / "manifest.json").write_text("{not valid json", encoding="utf-8")
+
+        assert run_verify(memory) == 1
+        assert "not valid JSON" in capsys.readouterr().err
+
+
+def test_sign_fails_cleanly_on_corrupt_manifest_json(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        (memory / "manifests" / "manifest.json").write_text("{not valid json", encoding="utf-8")
+
+        assert run_sign(memory) == 1
+        assert "not valid JSON" in capsys.readouterr().err
+
+
+def test_read_revision_raises_on_corrupt_manifest():
+    from memory_index_system.manifest import read_revision
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        (memory / "manifests" / "manifest.json").write_text("{not valid json", encoding="utf-8")
+
+        with pytest.raises(ValueError):
+            read_revision(memory)
+
+
+def test_sign_refuses_when_lock_file_present(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        lock_path = memory / "manifests" / ".sign.lock"
+        lock_path.write_bytes(b"")
+
+        rc = run_sign(memory)
+        assert rc == 1
+        assert "already in progress" in capsys.readouterr().err
+        # the refused attempt must not have touched the manifest's revision
+        manifest = json.loads((memory / "manifests" / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["revision"] == 1
+
+
+def test_sign_cleans_up_its_lock_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        run_sign(memory)
+        assert not (memory / "manifests" / ".sign.lock").exists()
+
+
+def test_sign_does_not_hash_its_own_lock_file():
+    """The .sign.lock file exists on disk while build_manifest walks the tree
+    during sign() -- it must never end up recorded in the manifest itself."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        run_sign(memory)
+        manifest = json.loads((memory / "manifests" / "manifest.json").read_text(encoding="utf-8"))
+        assert not any("sign.lock" in entry["path"] for entry in manifest["files"])

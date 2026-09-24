@@ -3,6 +3,7 @@
 import argparse
 import difflib
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -12,6 +13,26 @@ from .crypto import sign_files_canonical
 from .manifest import build_manifest, read_revision, verify_manifest
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates" / ".memory"
+
+
+def _load_registry_or_none(registry_dir: Path):
+    """Load the registry, printing a clean error instead of a traceback if it's corrupt."""
+    try:
+        return registry.load_registry(registry_dir)
+    except ValueError as exc:
+        print(f"Cannot read registry: {exc}", file=sys.stderr)
+        return None
+
+
+def _write_manifest_atomic(manifest_path: Path, manifest: dict) -> None:
+    """Write manifest.json atomically via write-to-temp + os.replace.
+
+    os.replace is atomic on both POSIX and Windows, so a crash mid-write or a
+    concurrent read can never see a half-written (and therefore corrupt) file.
+    """
+    tmp_path = manifest_path.with_name(manifest_path.name + ".tmp")
+    tmp_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    os.replace(tmp_path, manifest_path)
 
 
 def init(args=None):
@@ -35,9 +56,7 @@ def init(args=None):
     sig = sign_files_canonical(manifest["files"])
     if sig:
         manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
-    (memory / "manifests" / "manifest.json").write_text(
-        json.dumps(manifest, indent=2), encoding="utf-8"
-    )
+    _write_manifest_atomic(memory / "manifests" / "manifest.json", manifest)
     print(f"Initialized memory tree at {memory}")
     return 0
 
@@ -49,7 +68,7 @@ def verify(args=None):
 
     try:
         result = verify_manifest(Path(parsed.memory))
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         print(f"Cannot verify: {exc}", file=sys.stderr)
         return 1
     signature = result["signature"]
@@ -62,6 +81,10 @@ def verify(args=None):
 
     if result["missing"]:
         print("Missing files:", ", ".join(result["missing"]), file=sys.stderr)
+    if result["extra"]:
+        print("Untracked files (present on disk, not in manifest):", ", ".join(result["extra"]), file=sys.stderr)
+    if result["unsafe"]:
+        print("Rejected manifest entries (unsafe path):", ", ".join(result["unsafe"]), file=sys.stderr)
     for failure in result["failures"]:
         print(
             f"Hash mismatch: {failure['path']}",
@@ -91,28 +114,52 @@ def sign(args=None):
         print(f"Not a memory-index tree (no manifests/ directory found): {memory}", file=sys.stderr)
         return 1
 
-    current_revision = read_revision(memory)
-
-    if parsed.expect_revision is not None and current_revision != parsed.expect_revision:
+    # Advisory lock closing the gap between reading the current revision and
+    # writing the next one: without it, two concurrent `sign` calls on the
+    # same machine could both read revision N and both believe they're clear
+    # to write N+1, even with matching --expect-revision. os.O_EXCL creation
+    # is atomic at the OS level, so only one caller ever wins it.
+    lock_path = memory / "manifests" / ".sign.lock"
+    try:
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
         print(
-            f"Refusing to sign: expected revision {parsed.expect_revision}, found "
-            f"{current_revision}. Someone else already updated this tree since you "
-            "last read it — reload it before re-signing instead of overwriting their change.",
+            f"Another sign is already in progress on this tree ({lock_path} exists). "
+            "If nothing is actually running, a previous sign may have crashed — "
+            "remove the lock file and retry.",
             file=sys.stderr,
         )
         return 1
 
-    manifest = build_manifest(memory, revision=current_revision + 1)
-    sig = sign_files_canonical(manifest["files"])
-    if sig:
-        manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
-        print("Manifest signed with KIMI_MEMORY_KEY.")
-    else:
-        print("KIMI_MEMORY_KEY not set; manifest generated without signature.")
-    (memory / "manifests" / "manifest.json").write_text(
-        json.dumps(manifest, indent=2), encoding="utf-8"
-    )
-    return 0
+    try:
+        os.close(lock_fd)
+
+        try:
+            current_revision = read_revision(memory)
+        except ValueError as exc:
+            print(f"Refusing to sign: {exc}", file=sys.stderr)
+            return 1
+
+        if parsed.expect_revision is not None and current_revision != parsed.expect_revision:
+            print(
+                f"Refusing to sign: expected revision {parsed.expect_revision}, found "
+                f"{current_revision}. Someone else already updated this tree since you "
+                "last read it — reload it before re-signing instead of overwriting their change.",
+                file=sys.stderr,
+            )
+            return 1
+
+        manifest = build_manifest(memory, revision=current_revision + 1)
+        sig = sign_files_canonical(manifest["files"])
+        if sig:
+            manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
+            print("Manifest signed with KIMI_MEMORY_KEY.")
+        else:
+            print("KIMI_MEMORY_KEY not set; manifest generated without signature.")
+        _write_manifest_atomic(memory / "manifests" / "manifest.json", manifest)
+        return 0
+    finally:
+        lock_path.unlink(missing_ok=True)
 
 
 def registry_scan(args=None):
@@ -172,7 +219,9 @@ def registry_list(args=None):
     )
     parsed = parser.parse_args(args)
 
-    reg = registry.load_registry(Path(parsed.registry_dir))
+    reg = _load_registry_or_none(Path(parsed.registry_dir))
+    if reg is None:
+        return 1
     projects = reg.get("projects", [])
     if not projects:
         print("Registry is empty. Run memory-index-registry-scan first.", file=sys.stderr)
@@ -193,7 +242,9 @@ def registry_search(args=None):
     if not parsed.query and not parsed.tag:
         parser.error("provide a query, --tag, or both")
 
-    reg = registry.load_registry(Path(parsed.registry_dir))
+    reg = _load_registry_or_none(Path(parsed.registry_dir))
+    if reg is None:
+        return 1
     results = registry.search_registry(reg, query=parsed.query, tag=parsed.tag)
     if not results:
         print("No matches.")
@@ -212,7 +263,9 @@ def registry_diff(args=None):
     parsed = parser.parse_args(args)
 
     memory_dir = Path(parsed.memory).resolve()
-    reg = registry.load_registry(Path(parsed.registry_dir))
+    reg = _load_registry_or_none(Path(parsed.registry_dir))
+    if reg is None:
+        return 1
     entry = next((p for p in reg.get("projects", []) if p.get("path") == str(memory_dir)), None)
     if entry is None:
         print(
@@ -244,4 +297,10 @@ def registry_diff(args=None):
 
 
 if __name__ == "__main__":
-    sys.exit(init())
+    print(
+        "This module has no single entry point — run one of the installed "
+        "commands instead: memory-index-init, memory-index-verify, "
+        "memory-index-sign, memory-index-registry-scan/-list/-search/-diff.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
