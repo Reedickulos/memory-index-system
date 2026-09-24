@@ -37,6 +37,7 @@ dev = [
 memory-index-init = "memory_index_system.cli:init"
 memory-index-verify = "memory_index_system.cli:verify"
 memory-index-sign = "memory_index_system.cli:sign"
+memory-index-migrate = "memory_index_system.cli:migrate"
 memory-index-registry-scan = "memory_index_system.cli:registry_scan"
 memory-index-registry-list = "memory_index_system.cli:registry_list"
 memory-index-registry-search = "memory_index_system.cli:registry_search"

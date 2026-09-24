@@ -20,30 +20,16 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def read_revision(root: Path) -> int:
-    """Return the revision recorded in root's manifest.json, or 0 if there isn't one yet.
-
-    Raises ValueError if a manifest.json exists but isn't readable/valid JSON —
-    that's corruption, not "no revision yet", and silently treating it as 0
-    would let --expect-revision 0 through and mask the corruption.
-    """
-    manifest_path = root / "manifests" / "manifest.json"
-    if not manifest_path.exists():
-        return 0
-    try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Manifest is not valid JSON: {manifest_path}") from exc
-    except OSError as exc:
-        raise ValueError(f"Could not read manifest: {manifest_path} ({exc})") from exc
-    return int(data.get("revision", 0))
+V1_ALG = "HMAC-SHA256"
+V2_ALG = "HMAC-SHA256-v2"
 
 
-def read_tree_id(root: Path) -> Optional[str]:
-    """Return the tree_id recorded in root's manifest.json, or None if there
-    isn't one yet (either no manifest, or a pre-v2 manifest predating tree_id).
+def read_manifest(root: Path) -> Optional[Dict]:
+    """Return root's parsed manifest.json, or None if there isn't one yet.
 
-    Raises ValueError on a corrupt manifest.json, same reasoning as read_revision.
+    Raises ValueError if it exists but is unreadable, isn't a JSON object, or
+    has a non-integer revision. That's corruption, not "no manifest yet":
+    treating it as absent would mask it (e.g. let --expect-revision 0 through).
     """
     manifest_path = root / "manifests" / "manifest.json"
     if not manifest_path.exists():
@@ -54,7 +40,19 @@ def read_tree_id(root: Path) -> Optional[str]:
         raise ValueError(f"Manifest is not valid JSON: {manifest_path}") from exc
     except OSError as exc:
         raise ValueError(f"Could not read manifest: {manifest_path} ({exc})") from exc
-    return data.get("tree_id")
+    if not isinstance(data, dict):
+        raise ValueError(f"Manifest is not a JSON object: {manifest_path}")
+    revision = data.get("revision", 0)
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raise ValueError(f"Manifest has an invalid revision ({revision!r}): {manifest_path}")
+    return data
+
+
+def recorded_tree_id(manifest: Optional[Dict]) -> Optional[str]:
+    """The manifest's tree_id, or None when it's absent, empty, or not a string.
+    Both signers treat all three the same way: mint a fresh one, and say so."""
+    tree_id = manifest.get("tree_id") if manifest else None
+    return tree_id if isinstance(tree_id, str) and tree_id else None
 
 
 IGNORE_DIR_NAMES = {"__pycache__"}
@@ -131,7 +129,7 @@ def build_manifest(root: Path, revision: int = 1, tree_id: Optional[str] = None)
     `tree_id` is a stable identity for this tree, covered by the v2 signature
     (see crypto.sign_manifest_v2) so it can't be forged by anyone without the
     key. A fresh one is minted if not given — callers should pass the
-    existing tree's tree_id (via read_tree_id) whenever re-signing, so the
+    existing tree's tree_id (via recorded_tree_id) whenever re-signing, so the
     identity survives across revisions; only init() should let a new one be
     minted for what's genuinely a brand-new tree.
     """
@@ -150,13 +148,19 @@ def build_manifest(root: Path, revision: int = 1, tree_id: Optional[str] = None)
     }
 
 
-def verify_signature(manifest: Dict) -> Dict:
-    """Check manifest["signature"] against manifest["files"], if a signature is present.
+def verify_signature(manifest: Dict, allow_legacy: bool = False) -> Dict:
+    """Check manifest["signature"] against the manifest's own recorded fields.
 
     File hashes alone only catch accidental drift: anyone who can edit a
     tampered file can just as easily edit its hash entry in manifest.json to
     match. Reproducing the recorded HMAC (which requires the signing key) is
     what actually detects a manifest that was tampered with as a whole.
+
+    Legacy v1 signatures are rejected unless allow_legacy is set (only
+    `memory-index-migrate` sets it). From the manifest alone, a genuine
+    pre-v2 tree is indistinguishable from a v2 tree an attacker downgraded to
+    v1 in order to edit its revision or tree_id, so accepting v1 by default
+    would let anyone strip v2's protection. See docs/PROTOCOL-v2.md §3.
     """
     recorded = manifest.get("signature")
     key = get_key()
@@ -192,11 +196,18 @@ def verify_signature(manifest: Dict) -> Dict:
     alg = recorded.get("alg") if isinstance(recorded, dict) else None
     actual = recorded.get("value") if isinstance(recorded, dict) else None
 
-    if alg == "HMAC-SHA256-v2":
+    if not isinstance(actual, str) or not actual:
+        return {
+            "present": True,
+            "ok": False,
+            "reason": "signature value is missing or not a string — manifest may have been tampered with",
+        }
+
+    if alg == V2_ALG:
         expected = sign_manifest_v2(
             manifest.get("revision", 0), manifest.get("tree_id", ""), manifest.get("files", [])
         )
-        if not actual or not expected or not hmac.compare_digest(actual, expected):
+        if not expected or not hmac.compare_digest(actual, expected):
             return {
                 "present": True,
                 "ok": False,
@@ -207,25 +218,32 @@ def verify_signature(manifest: Dict) -> Dict:
             }
         return {"present": True, "ok": True, "reason": "signature verified"}
 
-    if alg == "HMAC-SHA256":
-        # Legacy v1 format: covers only `files`, not revision or tree_id.
-        # Still accepted so existing signed trees don't break, but flagged so
-        # callers know it doesn't protect revision from tampering.
-        expected = sign_files_canonical(manifest.get("files", []))
-        if not actual or not expected or not hmac.compare_digest(actual, expected):
+    if alg == V1_ALG:
+        if not allow_legacy:
             return {
                 "present": True,
                 "ok": False,
+                "legacy": True,
+                "reason": (
+                    "legacy v1 signature (HMAC-SHA256) is not accepted: it doesn't cover revision "
+                    "or tree_id, so a v2 manifest can be downgraded to it to edit either. Once a "
+                    "person has confirmed this tree genuinely predates v2 (don't do this "
+                    "automatically), run memory-index-migrate on it (see docs/PROTOCOL-v2.md §4)"
+                ),
+            }
+        expected = sign_files_canonical(manifest.get("files", []))
+        if not expected or not hmac.compare_digest(actual, expected):
+            return {
+                "present": True,
+                "ok": False,
+                "legacy": True,
                 "reason": "signature does not match recorded files — manifest may have been tampered with",
             }
         return {
             "present": True,
             "ok": True,
             "legacy": True,
-            "reason": (
-                "signature verified, but using the legacy v1 format, which doesn't cover "
-                "revision or tree_id — re-sign this tree to upgrade to v2 (see docs/PROTOCOL-v2.md)"
-            ),
+            "reason": "legacy v1 signature verified (covers files only, not revision or tree_id)",
         }
 
     return {
@@ -235,17 +253,13 @@ def verify_signature(manifest: Dict) -> Dict:
     }
 
 
-def verify_manifest(root: Path) -> Dict:
+def verify_manifest(root: Path, allow_legacy: bool = False) -> Dict:
     """Verify every file in manifests/manifest.json against disk, plus files present
     on disk but not recorded in the manifest, and the signature if present."""
     root = root.resolve()
-    manifest_path = root / "manifests" / "manifest.json"
-    if not manifest_path.exists():
-        raise FileNotFoundError(f"Manifest not found: {manifest_path}")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Manifest is not valid JSON: {manifest_path}") from exc
+    manifest = read_manifest(root)
+    if manifest is None:
+        raise FileNotFoundError(f"Manifest not found: {root / 'manifests' / 'manifest.json'}")
 
     failures = []
     missing = []
@@ -271,7 +285,7 @@ def verify_manifest(root: Path) -> Dict:
     # can't catch this; it requires walking the tree independently too.
     extra = sorted(set(_walk_files(root)) - recorded_paths)
 
-    signature = verify_signature(manifest)
+    signature = verify_signature(manifest, allow_legacy=allow_legacy)
 
     return {
         "ok": not failures and not missing and not extra and not unsafe and signature["ok"],

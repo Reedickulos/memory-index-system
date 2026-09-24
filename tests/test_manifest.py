@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from memory_index_system.cli import init, sign, verify
+from memory_index_system.cli import init, migrate, sign, verify
 from memory_index_system.crypto import sign_files_canonical
 from memory_index_system.manifest import _is_safe_relative_path
 
@@ -74,7 +74,7 @@ def test_sign_with_key_adds_signature():
         run_init(target)
         os.environ["KIMI_MEMORY_KEY"] = "test-secret"
         try:
-            run_sign(target / ".memory")
+            assert sign([str(target / ".memory"), "--adopt-unsigned"]) == 0
             manifest = json.loads(
                 (target / ".memory" / "manifests" / "manifest.json").read_text(encoding="utf-8")
             )
@@ -329,18 +329,32 @@ def test_sign_fails_cleanly_on_corrupt_manifest_json(capsys):
         assert "not valid JSON" in capsys.readouterr().err
 
 
-def test_read_revision_raises_on_corrupt_manifest():
-    from memory_index_system.manifest import read_revision
+@pytest.mark.parametrize("content", ["{not valid json", "[]", '{"revision": "3"}', '{"revision": -1}'])
+def test_read_manifest_raises_on_corrupt_manifest(content):
+    from memory_index_system.manifest import read_manifest
 
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "proj"
         target.mkdir()
         run_init(target)
         memory = target / ".memory"
-        (memory / "manifests" / "manifest.json").write_text("{not valid json", encoding="utf-8")
+        (memory / "manifests" / "manifest.json").write_text(content, encoding="utf-8")
 
         with pytest.raises(ValueError):
-            read_revision(memory)
+            read_manifest(memory)
+
+
+@pytest.mark.parametrize("command", [lambda m: run_sign(m), lambda m: run_verify(m)])
+def test_non_object_manifest_is_refused_cleanly(command, capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        (memory / "manifests" / "manifest.json").write_text("[]", encoding="utf-8")
+
+        assert command(memory) == 1
+        assert "not a JSON object" in capsys.readouterr().err
 
 
 def test_sign_refuses_when_lock_file_present(capsys):
@@ -498,50 +512,200 @@ def test_v2_signature_fails_if_tree_id_tampered_alone():
             del os.environ["KIMI_MEMORY_KEY"]
 
 
-def test_legacy_v1_signature_still_verifies_with_warning(capsys):
-    """A manifest signed under the old (pre-v2) format must still verify --
-    v2 is additive, not a break -- but flagged as legacy."""
+@pytest.fixture
+def signing_key():
+    os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+    yield
+    del os.environ["KIMI_MEMORY_KEY"]
+
+
+@pytest.fixture
+def signed_tree(signing_key):
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "proj"
         target.mkdir()
+        run_init(target)
+        yield target / ".memory"
+
+
+def _manifest_path(memory: Path) -> Path:
+    return memory / "manifests" / "manifest.json"
+
+
+def _load(memory: Path) -> dict:
+    return json.loads(_manifest_path(memory).read_text(encoding="utf-8"))
+
+
+def _save(memory: Path, manifest: dict) -> None:
+    _manifest_path(memory).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def _relabel_as_v1(memory: Path, drop_tree_id: bool = True) -> dict:
+    """Rewrite the manifest as a v1 signer would have: files-only signature."""
+    manifest = _load(memory)
+    if drop_tree_id:
+        manifest.pop("tree_id", None)
+    manifest["signature"] = {"alg": "HMAC-SHA256", "value": sign_files_canonical(manifest["files"])}
+    _save(memory, manifest)
+    return manifest
+
+
+def test_verify_rejects_legacy_v1_signature(signed_tree, capsys):
+    _relabel_as_v1(signed_tree)
+    assert run_verify(signed_tree) == 1
+    assert "memory-index-migrate" in capsys.readouterr().err
+
+
+def test_verify_rejects_downgrade_to_v1_that_edits_revision(signed_tree):
+    """Relabelling a v2 manifest with a v1 signature over the same files used
+    to verify (with a warning), letting revision be edited without the key."""
+    manifest = _relabel_as_v1(signed_tree, drop_tree_id=False)
+    manifest["revision"] = 999
+    _save(signed_tree, manifest)
+    assert run_verify(signed_tree) == 1
+
+
+def test_verify_fails_cleanly_on_non_string_signature_value(signed_tree, capsys):
+    manifest = _load(signed_tree)
+    manifest["signature"]["value"] = 12345
+    _save(signed_tree, manifest)
+    assert run_verify(signed_tree) == 1
+    assert "not a string" in capsys.readouterr().err
+
+
+def test_sign_refuses_legacy_v1_manifest(signed_tree, capsys):
+    before = _relabel_as_v1(signed_tree)
+    assert run_sign(signed_tree) == 1
+    assert "memory-index-migrate" in capsys.readouterr().err
+    assert _load(signed_tree) == before
+
+
+@pytest.mark.parametrize("field,value", [("tree_id", "some-other-tree"), ("revision", 999)])
+def test_sign_refuses_to_carry_forward_edited_header_field(signed_tree, field, value, capsys):
+    """Editing tree_id or revision without the key used to be blessed by the
+    next legitimate sign."""
+    manifest = _load(signed_tree)
+    manifest[field] = value
+    _save(signed_tree, manifest)
+
+    assert run_sign(signed_tree) == 1
+    assert "failed authentication" in capsys.readouterr().err
+    assert _load(signed_tree)[field] == value  # nothing rewritten
+
+
+def test_sign_carries_forward_authenticated_header(signed_tree):
+    before = _load(signed_tree)
+    (signed_tree / "episodic" / "note.md").write_text("new content", encoding="utf-8")
+
+    assert sign([str(signed_tree), "--expect-revision", "1"]) == 0
+    after = _load(signed_tree)
+    assert after["tree_id"] == before["tree_id"]
+    assert after["revision"] == 2
+    assert run_verify(signed_tree) == 0
+
+
+def test_sign_refuses_unsigned_manifest_with_key_unless_adopted(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)  # no key: unsigned
+        memory = target / ".memory"
         os.environ["KIMI_MEMORY_KEY"] = "test-secret"
         try:
-            run_init(target)
-            memory = target / ".memory"
-            manifest_path = memory / "manifests" / "manifest.json"
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            # Downgrade to what a v1 signer would have produced: files-only, no tree_id.
-            del manifest["tree_id"]
-            sig = sign_files_canonical(manifest["files"])
-            manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
-            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            assert run_sign(memory) == 1
+            assert "--adopt-unsigned" in capsys.readouterr().err
+            assert "signature" not in _load(memory)
 
+            assert sign([str(memory), "--adopt-unsigned"]) == 0
+            assert _load(memory)["signature"]["alg"] == "HMAC-SHA256-v2"
             assert run_verify(memory) == 0
-            assert "legacy" in capsys.readouterr().err.lower()
+            assert run_sign(memory) == 0  # authenticated from now on, no flag needed
         finally:
             del os.environ["KIMI_MEMORY_KEY"]
 
 
-def test_sign_upgrades_legacy_v1_tree_to_v2():
+def test_sign_refuses_missing_manifest_with_key(signed_tree, capsys):
+    _manifest_path(signed_tree).unlink()
+    assert run_sign(signed_tree) == 1
+    assert "missing" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad_tree_id", ["", 0, None])
+def test_sign_mints_and_announces_tree_id_when_empty_or_invalid(bad_tree_id, capsys):
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "proj"
         target.mkdir()
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
-        try:
-            run_init(target)
-            memory = target / ".memory"
-            manifest_path = memory / "manifests" / "manifest.json"
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            del manifest["tree_id"]
-            sig = sign_files_canonical(manifest["files"])
-            manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
-            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        run_init(target)
+        memory = target / ".memory"
+        manifest = _load(memory)
+        manifest["tree_id"] = bad_tree_id
+        _save(memory, manifest)
 
-            run_sign(memory)
+        assert run_sign(memory) == 0
+        assert "minting one now" in capsys.readouterr().out
+        tree_id = _load(memory)["tree_id"]
+        assert isinstance(tree_id, str) and tree_id
 
-            upgraded = json.loads(manifest_path.read_text(encoding="utf-8"))
-            assert upgraded["signature"]["alg"] == "HMAC-SHA256-v2"
-            assert upgraded["tree_id"]
-            assert run_verify(memory) == 0
-        finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+
+def test_migrate_upgrades_a_verified_v1_tree(signed_tree, capsys):
+    v1 = _relabel_as_v1(signed_tree)
+
+    assert migrate([str(signed_tree)]) == 0
+    assert "unauthenticated" in capsys.readouterr().err
+    after = _load(signed_tree)
+    assert after["signature"]["alg"] == "HMAC-SHA256-v2"
+    assert after["tree_id"]
+    assert after["revision"] == v1["revision"] + 1
+    assert run_verify(signed_tree) == 0
+
+
+def test_migrate_discards_a_tree_id_found_on_a_v1_manifest(signed_tree):
+    """No v1 tool ever wrote a tree_id, so one on a v1 manifest wasn't put
+    there by a signer and mustn't end up covered by a v2 signature."""
+    manifest = _relabel_as_v1(signed_tree)
+    manifest["tree_id"] = "planted-by-someone"
+    _save(signed_tree, manifest)
+
+    assert migrate([str(signed_tree)]) == 0
+    assert _load(signed_tree)["tree_id"] != "planted-by-someone"
+
+
+def test_migrate_refuses_a_v1_tree_that_does_not_verify(signed_tree, capsys):
+    before = _relabel_as_v1(signed_tree)
+    (signed_tree / "identity" / "project-charter.md").write_text("tampered", encoding="utf-8")
+
+    assert migrate([str(signed_tree)]) == 1
+    err = capsys.readouterr().err
+    assert "doesn't verify" in err
+    assert "Hash mismatch" in err
+    assert _load(signed_tree) == before
+
+
+def test_migrate_is_a_no_op_on_a_v2_tree(signed_tree, capsys):
+    before = _load(signed_tree)
+    assert migrate([str(signed_tree)]) == 0
+    assert "nothing to migrate" in capsys.readouterr().out
+    assert _load(signed_tree) == before
+
+
+def test_migrate_refuses_an_unsigned_tree(signing_key, capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        manifest = _load(memory)
+        del manifest["signature"]
+        _save(memory, manifest)
+
+        assert migrate([str(memory)]) == 1
+        assert "--adopt-unsigned" in capsys.readouterr().err
+
+
+def test_migrate_requires_the_key(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        assert migrate([str(target / ".memory")]) == 1
+        assert "KIMI_MEMORY_KEY is not set" in capsys.readouterr().err

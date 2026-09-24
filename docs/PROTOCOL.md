@@ -16,8 +16,9 @@ silent edit to this one.
 > gap where either could be edited without the signing key without breaking
 > the signature. Everything else on this page — layout, manifest fields
 > besides the signature, optimistic concurrency, the registry, conformance —
-> is unchanged and still the current rule. A v1-signed manifest still
-> verifies correctly today; it's just flagged as legacy.
+> is unchanged and still the current rule. A v1-signed manifest no longer
+> verifies: it can be forged from a v2 one (PROTOCOL-v2.md §3), so a genuine
+> pre-v2 tree is upgraded once with `memory-index-migrate` (§4.2 there).
 
 ## 1. Directory layout
 

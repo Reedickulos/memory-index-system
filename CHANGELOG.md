@@ -19,20 +19,22 @@ versions may include breaking changes.
 - Manifest signing (v2, `"alg": "HMAC-SHA256-v2"`) now covers `revision` and
   a new `tree_id` field, not just `files` — previously either could be
   edited by anyone without the signing key without invalidating the
-  signature. See docs/PROTOCOL-v2.md. Manifests signed under the old format
-  still verify, flagged as legacy; `memory-index-sign` upgrades a tree to
-  v2 automatically on its next run.
-- Fixed: that same v1→v2 upgrade used to leave a tree's own bundled
-  `scripts/verify-manifest.py` on the old files-only format, so it rejected
-  the tree's own manifest immediately after `memory-index-sign` upgraded it
-  (reproduced against a v1 template tree with `KIMI_MEMORY_KEY` set).
-  `memory-index-sign` now refreshes `scripts/*.py` from the current template
-  on every run, so the in-tree verifier can always check what was just
-  written, including trees first upgraded by their bundled
-  `sign-manifest.py` (which mints `tree_id` but can't replace its sibling
-  verifier). Running `.memory/scripts/sign-manifest.py` with no package
-  installed still can't repair the verifier itself — see
-  docs/PROTOCOL-v2.md §4.
+  signature. See docs/PROTOCOL-v2.md.
+- v1-signed manifests are rejected by verify rather than accepted with a
+  warning: a v2 manifest could be relabelled with a v1 signature over the
+  same files to edit `revision` or `tree_id` without the key. A genuine
+  pre-v2 tree is upgraded once with the new `memory-index-migrate`, which
+  verifies it fully under v1 first; running it needs a person's judgement
+  (see docs/PROTOCOL-v2.md §4.2).
+- `memory-index-sign` (and the in-tree `sign-manifest.py`) now authenticate
+  the current manifest before carrying its `revision` and `tree_id` forward,
+  so editing either without the key is refused instead of being signed as
+  valid. An unsigned or missing manifest needs `--adopt-unsigned` once when
+  a key is set; setting the key before `memory-index-init` avoids that.
+- `memory-index-sign` refreshes the tree's `scripts/*.py` from the current
+  template on every run, so a tree's bundled verifier can always check the
+  format just written. Running `.memory/scripts/sign-manifest.py` with no
+  package installed can't do this — see docs/PROTOCOL-v2.md §4.3.
 - `memory-index-sign` now holds an advisory lock for its read-check-write
   sequence and writes `manifest.json` atomically, closing most of a race
   where two concurrent signs could both pass `--expect-revision`.

@@ -39,13 +39,17 @@ cd memory-index-system
 # Install the CLI
 pip install -e .
 
+# Optional: set a signing key *before* init, so the tree is signed from the start
+export KIMI_MEMORY_KEY="your-secret"
+
 # Scaffold a memory tree in your project
 memory-index-init ./my-research-project
 
 # Verify integrity
 memory-index-verify ./my-research-project/.memory
 
-# Re-sign after edits (requires KIMI_MEMORY_KEY env var)
+# Re-sign after edits (signed if KIMI_MEMORY_KEY is set). A tree created
+# without a key needs --adopt-unsigned the first time it's signed with one.
 memory-index-sign ./my-research-project/.memory
 
 # Index every .memory/ tree under a directory into a local, cross-project registry
