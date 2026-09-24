@@ -1,8 +1,5 @@
 # Architecture
 
-> **A COREPACT AI TECHNOLOGIES Project**  
-> **ALIGNED BY DESIGN**
-
 ## Directory layout
 
 ```text

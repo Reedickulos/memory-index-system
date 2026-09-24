@@ -1,8 +1,5 @@
 # FAQ
 
-> **A COREPACT AI TECHNOLOGIES Project**  
-> **ALIGNED BY DESIGN**
-
 ## Why not just use a database?
 
 Databases are great for structured data, but they are opaque to humans and hard to hand off across agents. This system optimizes for readability, portability, and git-friendly diffs.

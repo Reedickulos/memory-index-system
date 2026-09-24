@@ -1,8 +1,5 @@
 # Agent Protocol
 
-> **A COREPACT AI TECHNOLOGIES Project**  
-> **ALIGNED BY DESIGN**
-
 If you are an agent reading this, follow the protocol. It protects the project from drift and hallucination.
 
 ## Boot sequence
