@@ -90,6 +90,21 @@ def test_standalone_verify_fails_on_untracked_file():
         assert "Untracked files" in result.stderr
 
 
+def test_standalone_verify_fails_on_untracked_dot_lock_file():
+    """A real content file ending in .lock must not be confused with the
+    transient manifests/.sign.lock -- only that exact path is ignored."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        init([str(target)])
+        memory = target / ".memory"
+        (memory / "semantic" / "injected.lock").write_text("not tracked", encoding="utf-8")
+
+        result = run_script("verify-manifest.py", memory)
+        assert result.returncode == 1
+        assert "Untracked files" in result.stderr
+
+
 def test_standalone_sign_ignores_os_and_editor_artifacts():
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "proj"

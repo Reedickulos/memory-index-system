@@ -19,7 +19,11 @@ from pathlib import Path
 
 IGNORE_DIR_NAMES = {"__pycache__"}
 IGNORE_FILE_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
-IGNORE_FILE_SUFFIXES = (".tmp", ".swp", ".swo", ".pyc", ".lock")
+IGNORE_FILE_SUFFIXES = (".tmp", ".swp", ".swo", ".pyc")
+# Exact relative path of the transient sign lock file -- not a ".lock" suffix
+# rule, which would let a real content file named e.g. injected.lock bypass
+# manifest generation and the untracked-file check entirely.
+SIGN_LOCK_PATH = "manifests/.sign.lock"
 
 
 def is_ignored_file(name: str) -> bool:
@@ -43,7 +47,7 @@ def walk_files(root: Path):
                 continue
             path = Path(dirpath) / fn
             rel = path.relative_to(root).as_posix()
-            if rel == "manifests/manifest.json":
+            if rel in ("manifests/manifest.json", SIGN_LOCK_PATH):
                 continue
             entries.append(rel)
     return entries

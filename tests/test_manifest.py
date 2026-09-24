@@ -382,6 +382,19 @@ def test_sign_does_not_hash_its_own_lock_file():
         assert not any("sign.lock" in entry["path"] for entry in manifest["files"])
 
 
+def test_verify_fails_on_untracked_file_named_dot_lock():
+    """A real content file that happens to end in .lock must NOT be treated
+    like the transient manifests/.sign.lock -- only that exact path is ignored."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        (memory / "semantic" / "injected.lock").write_text("not tracked", encoding="utf-8")
+
+        assert run_verify(memory) == 1
+
+
 def test_is_safe_relative_path_never_escapes_root_by_construction():
     """The check must reflect what root / path_str actually resolves to on
     this host, not POSIX-only assumptions -- so probe it with real

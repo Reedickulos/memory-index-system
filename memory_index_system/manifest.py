@@ -40,7 +40,12 @@ def read_revision(root: Path) -> int:
 
 IGNORE_DIR_NAMES = {"__pycache__"}
 IGNORE_FILE_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
-IGNORE_FILE_SUFFIXES = (".tmp", ".swp", ".swo", ".pyc", ".lock")
+IGNORE_FILE_SUFFIXES = (".tmp", ".swp", ".swo", ".pyc")
+# The exact relative path of cli.sign()'s transient lock file -- NOT a ".lock"
+# suffix rule. A suffix-based ignore would let any real content file that
+# happens to end in .lock (e.g. semantic/injected.lock) bypass both manifest
+# generation and the untracked-file check in verify_manifest below.
+SIGN_LOCK_PATH = "manifests/.sign.lock"
 
 
 def _is_ignored_file(name: str) -> bool:
@@ -80,8 +85,9 @@ def _is_safe_relative_path(root: Path, path_str: str) -> bool:
 
 
 def _walk_files(root: Path) -> List[str]:
-    """List every relative POSIX path under root, except manifests/manifest.json
-    and OS/editor artifacts (.DS_Store, Thumbs.db, __pycache__, *.tmp, *.swp, ...)."""
+    """List every relative POSIX path under root, except manifests/manifest.json,
+    the transient sign lock file, and OS/editor artifacts (.DS_Store, Thumbs.db,
+    __pycache__, *.tmp, *.swp, ...)."""
     entries: List[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIR_NAMES]
@@ -90,7 +96,7 @@ def _walk_files(root: Path) -> List[str]:
                 continue
             path = Path(dirpath) / fn
             rel = path.relative_to(root).as_posix()
-            if rel == "manifests/manifest.json":
+            if rel in ("manifests/manifest.json", SIGN_LOCK_PATH):
                 continue
             entries.append(rel)
     return entries
