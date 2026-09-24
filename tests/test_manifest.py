@@ -709,3 +709,20 @@ def test_migrate_requires_the_key(capsys):
         run_init(target)
         assert migrate([str(target / ".memory")]) == 1
         assert "KIMI_MEMORY_KEY is not set" in capsys.readouterr().err
+
+
+def test_sign_without_key_refuses_to_strip_a_signed_manifest(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            run_init(target)
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+        memory = target / ".memory"
+        before = _load(memory)
+
+        assert run_sign(memory) == 1
+        assert "would strip its signature" in capsys.readouterr().err
+        assert _load(memory) == before

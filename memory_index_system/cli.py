@@ -227,6 +227,13 @@ def sign(args=None):
                         file=sys.stderr,
                     )
                     return 1
+        elif previous is not None and previous.get("signature") is not None:
+            print(
+                "Refusing to sign: the current manifest is signed, but KIMI_MEMORY_KEY is not "
+                "set. Writing it back unsigned would strip its signature. Set the key and retry.",
+                file=sys.stderr,
+            )
+            return 1
 
         current_revision = previous.get("revision", 0) if previous else 0
         if parsed.expect_revision is not None and current_revision != parsed.expect_revision:

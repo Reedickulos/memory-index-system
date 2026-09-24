@@ -122,8 +122,13 @@ have changed, since re-hashing them is what signing is for — so the normal
 revision and tree_id genuinely can't be authenticated (a stripped signature
 looks the same), so they're taken as-is, once. Setting the key *before*
 `memory-index-init` avoids this entirely — the tree is signed from the
-start. Without a key, signing works as before and writes an unsigned
-manifest; there's nothing to authenticate.
+start.
+
+Without a key, signing an unsigned tree works as before and writes an
+unsigned manifest; there's nothing to authenticate. Signing a **signed**
+tree without the key is refused: writing it back unsigned would strip its
+signature, silently dropping the tree's protection until someone with the
+key noticed.
 
 A `tree_id` that is missing, empty, or not a string is treated the same way
 by every signer: a fresh one is minted, and a message says so.

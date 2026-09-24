@@ -158,6 +158,13 @@ def main():
             if error:
                 print(f"Refusing to sign: {error}", file=sys.stderr)
                 return 1
+        elif previous is not None and previous.get("signature") is not None:
+            print(
+                "Refusing to sign: the current manifest is signed, but KIMI_MEMORY_KEY is not "
+                "set. Writing it back unsigned would strip its signature. Set the key and retry.",
+                file=sys.stderr,
+            )
+            return 1
 
         revision = (previous.get("revision", 0) if previous else 0) + 1
         tree_id = previous.get("tree_id") if previous else None

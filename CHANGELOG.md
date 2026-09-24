@@ -31,6 +31,8 @@ versions may include breaking changes.
   so editing either without the key is refused instead of being signed as
   valid. An unsigned or missing manifest needs `--adopt-unsigned` once when
   a key is set; setting the key before `memory-index-init` avoids that.
+  Without the key, signing a signed tree is refused instead of writing it
+  back unsigned (which stripped its signature).
 - `memory-index-sign` refreshes the tree's `scripts/*.py` from the current
   template on every run, so a tree's bundled verifier can always check the
   format just written. Running `.memory/scripts/sign-manifest.py` with no
