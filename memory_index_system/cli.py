@@ -43,9 +43,14 @@ def verify(args=None):
     parsed = parser.parse_args(args)
 
     result = verify_manifest(Path(parsed.memory))
+    signature = result["signature"]
+
     if result["ok"]:
         print("Manifest verification passed.")
+        if not signature["present"]:
+            print(f"Warning: {signature['reason']}", file=sys.stderr)
         return 0
+
     if result["missing"]:
         print("Missing files:", ", ".join(result["missing"]), file=sys.stderr)
     for failure in result["failures"]:
@@ -53,6 +58,8 @@ def verify(args=None):
             f"Hash mismatch: {failure['path']}",
             file=sys.stderr,
         )
+    if not signature["ok"]:
+        print(f"Signature check failed: {signature['reason']}", file=sys.stderr)
     return 1
 
 

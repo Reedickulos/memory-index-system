@@ -1,5 +1,6 @@
 """Tests for manifest generation and verification."""
 
+import hashlib
 import json
 import os
 import tempfile
@@ -78,3 +79,60 @@ def test_sign_with_key_adds_signature():
             assert manifest["signature"]["alg"] == "HMAC-SHA256"
         finally:
             del os.environ["KIMI_MEMORY_KEY"]
+
+
+def test_verify_passes_with_correct_signature():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            run_init(target)
+            assert run_verify(target / ".memory") == 0
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+
+
+def test_verify_fails_on_tampered_file_with_patched_hash():
+    """A manifest edited to match a tampered file must still fail, via its signature."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            run_init(target)
+            memory = target / ".memory"
+            index_md = memory / "INDEX.md"
+            index_md.write_text("tampered", encoding="utf-8")
+
+            manifest_path = memory / "manifests" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            new_hash = hashlib.sha256(index_md.read_bytes()).hexdigest()
+            for entry in manifest["files"]:
+                if entry["path"] == "INDEX.md":
+                    entry["sha256"] = new_hash
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+            assert run_verify(memory) == 1
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+
+
+def test_verify_fails_on_signed_manifest_without_key():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            run_init(target)
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+        assert run_verify(target / ".memory") == 1
+
+
+def test_verify_passes_unsigned_manifest_with_warning():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)  # no KIMI_MEMORY_KEY set
+        assert run_verify(target / ".memory") == 0
