@@ -54,11 +54,13 @@ Lists every file in the package and its SHA-256 hash.
 | `tree_id` | string | UUID4 minted once at `init`, unchanged for the tree's lifetime; covered by a v2 signature (see [PROTOCOL-v2.md](PROTOCOL-v2.md)) |
 | `file_count` | integer | Number of files |
 | `files` | array | `{path, sha256}` entries |
-| `signature` | object | Optional signature — `alg` is `"HMAC-SHA256-v2"` (current) or `"HMAC-SHA256"` (legacy v1) |
+| `signature` | object | Optional signature — `alg` is `"HMAC-SHA256-v2"`. The legacy v1 `"HMAC-SHA256"` is rejected by verify; see below |
 
 ### Signature
 
-If `KIMI_MEMORY_KEY` is set, the manifest is signed. Current signing (v2) covers `revision`, `tree_id`, and `files`; see [PROTOCOL-v2.md](PROTOCOL-v2.md) for the exact payload and why `revision`/`tree_id` had to be added. A manifest signed under the older v1 format (`"alg": "HMAC-SHA256"`, covering only `files`) still verifies today — it's flagged as legacy rather than rejected.
+If `KIMI_MEMORY_KEY` is set, the manifest is signed. Current signing (v2) covers `revision`, `tree_id`, and `files`; see [PROTOCOL-v2.md](PROTOCOL-v2.md) for the exact payload and why `revision`/`tree_id` had to be added. A manifest signed under the older v1 format (`"alg": "HMAC-SHA256"`, covering only `files`) is rejected: a v2 manifest can be relabelled with a v1 signature to edit its `revision` or `tree_id`, and that's indistinguishable from a genuine pre-v2 tree. A tree that genuinely predates v2 is upgraded once with `memory-index-migrate`, after a person has confirmed it (PROTOCOL-v2.md §4.2).
+
+`memory-index-sign`, with the key set, checks the current manifest's signature before carrying its `revision` and `tree_id` forward, and refuses if it doesn't match. An unsigned or missing manifest is refused unless `--adopt-unsigned` is passed (once, for a tree created before a key was set). See PROTOCOL-v2.md §4.1.
 
 `memory-index-verify` checks the signature, not just file hashes — hashes alone only catch a file that drifted from what `manifest.json` records, not a `manifest.json` that was edited to match a tampered file. Rules:
 

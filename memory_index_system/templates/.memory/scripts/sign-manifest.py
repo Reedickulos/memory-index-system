@@ -54,23 +54,10 @@ def walk_files(root: Path):
     return entries
 
 
-def read_revision(root: Path) -> int:
-    """Return the recorded revision, or 0 if there isn't one yet. Raises
-    ValueError if manifest.json exists but isn't valid JSON -- that's
-    corruption, not "no revision yet"."""
-    manifest_path = root / "manifests" / "manifest.json"
-    if not manifest_path.exists():
-        return 0
-    try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Manifest is not valid JSON: {manifest_path}") from exc
-    return int(data.get("revision", 0))
-
-
-def read_tree_id(root: Path):
-    """Return the recorded tree_id, or None if there isn't one yet (no
-    manifest, or a pre-v2 manifest predating tree_id)."""
+def read_manifest(root: Path):
+    """Return the parsed manifest.json, or None if there isn't one yet. Raises
+    ValueError if it exists but is unreadable, isn't a JSON object, or has a
+    non-integer revision -- that's corruption, not "no manifest yet"."""
     manifest_path = root / "manifests" / "manifest.json"
     if not manifest_path.exists():
         return None
@@ -78,7 +65,54 @@ def read_tree_id(root: Path):
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"Manifest is not valid JSON: {manifest_path}") from exc
-    return data.get("tree_id")
+    except OSError as exc:
+        raise ValueError(f"Could not read manifest: {manifest_path} ({exc})") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"Manifest is not a JSON object: {manifest_path}")
+    revision = data.get("revision", 0)
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raise ValueError(f"Manifest has an invalid revision ({revision!r}): {manifest_path}")
+    return data
+
+
+def sign_manifest_v2(key: str, revision, tree_id, files) -> str:
+    payload = {"v": 2, "revision": revision, "tree_id": tree_id, "files": files}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hmac.new(key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
+
+
+def authentication_error(previous, key: str, adopt_unsigned: bool):
+    """Why the current manifest's revision/tree_id can't be trusted enough to
+    carry forward into a new signature, or None if they can. Mirrors the
+    installed package's sign()."""
+    recorded = previous.get("signature") if previous else None
+    if recorded is None:
+        if adopt_unsigned:
+            return None
+        state = "missing" if previous is None else "unsigned"
+        return (
+            f"the current manifest is {state}, so its revision and tree_id can't be "
+            "authenticated (a stripped signature looks the same). If this tree was created "
+            "without a key, pass --adopt-unsigned once to sign it as-is."
+        )
+    alg = recorded.get("alg") if isinstance(recorded, dict) else None
+    value = recorded.get("value") if isinstance(recorded, dict) else None
+    if alg == "HMAC-SHA256":
+        return (
+            "the current manifest has a legacy v1 signature, which doesn't cover revision or "
+            "tree_id. Once a person has confirmed this tree genuinely predates v2 (don't do "
+            "this automatically), run the installed memory-index-migrate on it."
+        )
+    if alg != "HMAC-SHA256-v2":
+        return f"unrecognized signature algorithm: {alg!r}"
+    if not isinstance(value, str) or not value:
+        return "signature value is missing or not a string"
+    expected = sign_manifest_v2(
+        key, previous.get("revision", 0), previous.get("tree_id", ""), previous.get("files", [])
+    )
+    if not hmac.compare_digest(value, expected):
+        return "signature does not match -- manifest may have been tampered with"
+    return None
 
 
 def write_manifest_atomic(manifest_path: Path, manifest: dict) -> None:
@@ -88,6 +122,13 @@ def write_manifest_atomic(manifest_path: Path, manifest: dict) -> None:
 
 
 def main():
+    args = sys.argv[1:]
+    unknown = [a for a in args if a != "--adopt-unsigned"]
+    if unknown:
+        print(f"Unrecognized arguments: {' '.join(unknown)} (only --adopt-unsigned is supported)", file=sys.stderr)
+        return 2
+    adopt_unsigned = "--adopt-unsigned" in args
+
     root = Path(__file__).resolve().parent.parent
     lock_path = root / "manifests" / ".sign.lock"
 
@@ -106,24 +147,29 @@ def main():
         os.close(lock_fd)
 
         try:
-            revision = read_revision(root) + 1
-            tree_id = read_tree_id(root)
+            previous = read_manifest(root)
         except ValueError as exc:
             print(f"Refusing to sign: {exc}", file=sys.stderr)
             return 1
 
-        if tree_id is None:
+        key = os.environ.get("KIMI_MEMORY_KEY")
+        if key:
+            error = authentication_error(previous, key, adopt_unsigned)
+            if error:
+                print(f"Refusing to sign: {error}", file=sys.stderr)
+                return 1
+
+        revision = (previous.get("revision", 0) if previous else 0) + 1
+        tree_id = previous.get("tree_id") if previous else None
+        if not isinstance(tree_id, str) or not tree_id:
             tree_id = str(uuid.uuid4())
-            print("No tree_id found on this manifest; minting one now (upgrading to signature format v2).")
+            print("No tree_id found on this manifest; minting one now.")
             # NOTE: unlike memory_index_system.cli.sign(), this standalone script
-            # cannot also refresh its sibling verify-manifest.py -- it has no
-            # newer template to copy from, since it's designed to run without
-            # the package installed. A verify-manifest.py that predates v2
-            # still only checks the old files-only format and will reject the
-            # v2 manifest this call is about to write. Run the installed
-            # `memory-index-sign` against this tree at least once (it syncs
-            # scripts/ from the current template on every run), or manually
-            # replace scripts/verify-manifest.py, to fix that.
+            # can't refresh its sibling verify-manifest.py -- it has no newer
+            # template to copy from. If that verifier predates v2, it will
+            # reject the v2 manifest written below; run the installed
+            # `memory-index-sign` once (it syncs scripts/ on every run), or
+            # replace scripts/verify-manifest.py by hand.
 
         entries = [{"path": rel, "sha256": sha256_file(root / rel)} for rel in sorted(walk_files(root))]
 
@@ -137,13 +183,8 @@ def main():
             "files": entries,
         }
 
-        key = os.environ.get("KIMI_MEMORY_KEY")
         if key:
-            # v2 signing payload covers revision and tree_id in addition to
-            # files -- see crypto.sign_manifest_v2 / docs/PROTOCOL-v2.md.
-            payload = {"v": 2, "revision": revision, "tree_id": tree_id, "files": entries}
-            canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            sig = hmac.new(key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
+            sig = sign_manifest_v2(key, revision, tree_id, entries)
             manifest["signature"] = {"alg": "HMAC-SHA256-v2", "value": sig}
             print("Manifest signed.")
         else:

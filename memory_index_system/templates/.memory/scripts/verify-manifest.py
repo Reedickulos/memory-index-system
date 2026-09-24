@@ -71,15 +71,6 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def sign_files_canonical(files):
-    """Legacy v1 signing: covers only files. Kept so pre-v2-signed manifests still verify."""
-    key = os.environ.get("KIMI_MEMORY_KEY")
-    if not key:
-        return None
-    canonical = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hmac.new(key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
-
-
 def sign_manifest_v2(revision, tree_id, files):
     """Current signing: covers revision and tree_id in addition to files."""
     key = os.environ.get("KIMI_MEMORY_KEY")
@@ -101,6 +92,12 @@ def main():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         print(f"Manifest is not valid JSON: {manifest_path}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"Could not read manifest: {manifest_path} ({exc})", file=sys.stderr)
+        return 1
+    if not isinstance(manifest, dict):
+        print(f"Manifest is not a JSON object: {manifest_path}", file=sys.stderr)
         return 1
 
     ok = True
@@ -157,9 +154,12 @@ def main():
         if not key:
             print("Signature check failed: manifest is signed but KIMI_MEMORY_KEY is not set; cannot verify", file=sys.stderr)
             ok = False
+        elif not isinstance(actual_sig, str) or not actual_sig:
+            print("Signature check failed: signature value is missing or not a string -- manifest may have been tampered with", file=sys.stderr)
+            ok = False
         elif alg == "HMAC-SHA256-v2":
             expected = sign_manifest_v2(manifest.get("revision", 0), manifest.get("tree_id", ""), manifest.get("files", []))
-            if not actual_sig or not expected or not hmac.compare_digest(actual_sig, expected):
+            if not expected or not hmac.compare_digest(actual_sig, expected):
                 print(
                     "Signature check failed: signature does not match -- manifest may have been "
                     "tampered with, including its revision or tree_id",
@@ -167,16 +167,17 @@ def main():
                 )
                 ok = False
         elif alg == "HMAC-SHA256":
-            expected = sign_files_canonical(manifest.get("files", []))
-            if not actual_sig or not expected or not hmac.compare_digest(actual_sig, expected):
-                print("Signature check failed: signature does not match recorded files — manifest may have been tampered with", file=sys.stderr)
-                ok = False
-            else:
-                print(
-                    "Warning: signature verified, but using the legacy v1 format, which doesn't "
-                    "cover revision or tree_id — re-sign this tree to upgrade to v2",
-                    file=sys.stderr,
-                )
+            # Rejected, not accepted with a warning: v1 doesn't cover revision
+            # or tree_id, and a v2 manifest can be downgraded to it to edit
+            # either. See docs/PROTOCOL-v2.md §3.
+            print(
+                "Signature check failed: legacy v1 signature (HMAC-SHA256) is not accepted -- it "
+                "doesn't cover revision or tree_id, so a v2 manifest can be downgraded to it. Once a "
+                "person has confirmed this tree genuinely predates v2 (don't do this automatically), "
+                "run the installed memory-index-migrate on it.",
+                file=sys.stderr,
+            )
+            ok = False
         else:
             print(f"Signature check failed: unrecognized signature algorithm: {alg!r}", file=sys.stderr)
             ok = False
