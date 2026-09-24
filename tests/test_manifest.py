@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from memory_index_system.cli import init, sign, verify
+from memory_index_system.crypto import sign_files_canonical
 from memory_index_system.manifest import _is_safe_relative_path
 
 
@@ -78,7 +79,7 @@ def test_sign_with_key_adds_signature():
                 (target / ".memory" / "manifests" / "manifest.json").read_text(encoding="utf-8")
             )
             assert "signature" in manifest
-            assert manifest["signature"]["alg"] == "HMAC-SHA256"
+            assert manifest["signature"]["alg"] == "HMAC-SHA256-v2"
         finally:
             del os.environ["KIMI_MEMORY_KEY"]
 
@@ -440,3 +441,107 @@ def test_verify_rejects_windows_drive_and_backslash_paths():
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
         assert run_verify(memory) == 1
+
+
+def test_tree_id_minted_at_init_and_stable_across_signs():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        run_init(target)
+        memory = target / ".memory"
+        manifest_path = memory / "manifests" / "manifest.json"
+
+        tree_id = json.loads(manifest_path.read_text(encoding="utf-8"))["tree_id"]
+        assert tree_id  # non-empty
+
+        run_sign(memory)
+        run_sign(memory)
+        after = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert after["tree_id"] == tree_id  # identity survives re-signing
+
+
+def test_v2_signature_fails_if_revision_tampered_alone():
+    """Tampering with only `revision` (files untouched) must break a v2
+    signature -- v1 didn't cover revision at all, which was the point of v2."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            run_init(target)
+            memory = target / ".memory"
+            manifest_path = memory / "manifests" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["revision"] = 999  # only the revision changes; files/signature untouched
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+            assert run_verify(memory) == 1
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+
+
+def test_v2_signature_fails_if_tree_id_tampered_alone():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            run_init(target)
+            memory = target / ".memory"
+            manifest_path = memory / "manifests" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["tree_id"] = "swapped-identity"
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+            assert run_verify(memory) == 1
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+
+
+def test_legacy_v1_signature_still_verifies_with_warning(capsys):
+    """A manifest signed under the old (pre-v2) format must still verify --
+    v2 is additive, not a break -- but flagged as legacy."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            run_init(target)
+            memory = target / ".memory"
+            manifest_path = memory / "manifests" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            # Downgrade to what a v1 signer would have produced: files-only, no tree_id.
+            del manifest["tree_id"]
+            sig = sign_files_canonical(manifest["files"])
+            manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+            assert run_verify(memory) == 0
+            assert "legacy" in capsys.readouterr().err.lower()
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+
+
+def test_sign_upgrades_legacy_v1_tree_to_v2():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            run_init(target)
+            memory = target / ".memory"
+            manifest_path = memory / "manifests" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            del manifest["tree_id"]
+            sig = sign_files_canonical(manifest["files"])
+            manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+            run_sign(memory)
+
+            upgraded = json.loads(manifest_path.read_text(encoding="utf-8"))
+            assert upgraded["signature"]["alg"] == "HMAC-SHA256-v2"
+            assert upgraded["tree_id"]
+            assert run_verify(memory) == 0
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]

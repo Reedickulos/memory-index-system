@@ -4,11 +4,12 @@ import hashlib
 import hmac
 import json
 import os
+import uuid
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from . import __version__
-from .crypto import get_key, sign_files_canonical
+from .crypto import get_key, sign_files_canonical, sign_manifest_v2
 
 
 def sha256_file(path: Path) -> str:
@@ -36,6 +37,24 @@ def read_revision(root: Path) -> int:
     except OSError as exc:
         raise ValueError(f"Could not read manifest: {manifest_path} ({exc})") from exc
     return int(data.get("revision", 0))
+
+
+def read_tree_id(root: Path) -> Optional[str]:
+    """Return the tree_id recorded in root's manifest.json, or None if there
+    isn't one yet (either no manifest, or a pre-v2 manifest predating tree_id).
+
+    Raises ValueError on a corrupt manifest.json, same reasoning as read_revision.
+    """
+    manifest_path = root / "manifests" / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Manifest is not valid JSON: {manifest_path}") from exc
+    except OSError as exc:
+        raise ValueError(f"Could not read manifest: {manifest_path} ({exc})") from exc
+    return data.get("tree_id")
 
 
 IGNORE_DIR_NAMES = {"__pycache__"}
@@ -102,12 +121,19 @@ def _walk_files(root: Path) -> List[str]:
     return entries
 
 
-def build_manifest(root: Path, revision: int = 1) -> Dict:
+def build_manifest(root: Path, revision: int = 1, tree_id: Optional[str] = None) -> Dict:
     """Build a manifest of every file under root except manifests/manifest.json.
 
     `revision` is a caller-supplied monotonic counter, not something this
     function infers — see cli.sign()'s --expect-revision for how it's used
     as an optimistic-concurrency check between agents editing the same tree.
+
+    `tree_id` is a stable identity for this tree, covered by the v2 signature
+    (see crypto.sign_manifest_v2) so it can't be forged by anyone without the
+    key. A fresh one is minted if not given — callers should pass the
+    existing tree's tree_id (via read_tree_id) whenever re-signing, so the
+    identity survives across revisions; only init() should let a new one be
+    minted for what's genuinely a brand-new tree.
     """
     root = root.resolve()
     entries = [
@@ -118,6 +144,7 @@ def build_manifest(root: Path, revision: int = 1) -> Dict:
         "generated": _now_iso(),
         "generator": f"memory-index-system {__version__}",
         "revision": revision,
+        "tree_id": tree_id or str(uuid.uuid4()),
         "file_count": len(entries),
         "files": entries,
     }
@@ -162,16 +189,50 @@ def verify_signature(manifest: Dict) -> Dict:
             "reason": "manifest is signed but KIMI_MEMORY_KEY is not set; cannot verify",
         }
 
-    expected = sign_files_canonical(manifest.get("files", []))
+    alg = recorded.get("alg") if isinstance(recorded, dict) else None
     actual = recorded.get("value") if isinstance(recorded, dict) else None
-    if not actual or not expected or not hmac.compare_digest(actual, expected):
+
+    if alg == "HMAC-SHA256-v2":
+        expected = sign_manifest_v2(
+            manifest.get("revision", 0), manifest.get("tree_id", ""), manifest.get("files", [])
+        )
+        if not actual or not expected or not hmac.compare_digest(actual, expected):
+            return {
+                "present": True,
+                "ok": False,
+                "reason": (
+                    "signature does not match — manifest may have been tampered with, "
+                    "including its revision or tree_id (both are covered by this signature format)"
+                ),
+            }
+        return {"present": True, "ok": True, "reason": "signature verified"}
+
+    if alg == "HMAC-SHA256":
+        # Legacy v1 format: covers only `files`, not revision or tree_id.
+        # Still accepted so existing signed trees don't break, but flagged so
+        # callers know it doesn't protect revision from tampering.
+        expected = sign_files_canonical(manifest.get("files", []))
+        if not actual or not expected or not hmac.compare_digest(actual, expected):
+            return {
+                "present": True,
+                "ok": False,
+                "reason": "signature does not match recorded files — manifest may have been tampered with",
+            }
         return {
             "present": True,
-            "ok": False,
-            "reason": "signature does not match recorded files — manifest may have been tampered with",
+            "ok": True,
+            "legacy": True,
+            "reason": (
+                "signature verified, but using the legacy v1 format, which doesn't cover "
+                "revision or tree_id — re-sign this tree to upgrade to v2 (see docs/PROTOCOL-v2.md)"
+            ),
         }
 
-    return {"present": True, "ok": True, "reason": "signature verified"}
+    return {
+        "present": True,
+        "ok": False,
+        "reason": f"unrecognized signature algorithm: {alg!r}",
+    }
 
 
 def verify_manifest(root: Path) -> Dict:

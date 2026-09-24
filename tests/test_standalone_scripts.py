@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from memory_index_system.cli import init
+from memory_index_system.crypto import sign_files_canonical
 
 
 def run_script(script_name: str, memory: Path, env=None):
@@ -146,3 +147,87 @@ def test_standalone_verify_rejects_windows_drive_and_backslash_paths():
 
         result = run_script("verify-manifest.py", memory)
         assert result.returncode == 1
+
+
+def test_standalone_tree_id_minted_and_stable_across_signs():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        init([str(target)])
+        memory = target / ".memory"
+        manifest_path = memory / "manifests" / "manifest.json"
+
+        tree_id = json.loads(manifest_path.read_text(encoding="utf-8"))["tree_id"]
+        assert tree_id
+
+        run_script("sign-manifest.py", memory)
+        after = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert after["tree_id"] == tree_id
+
+
+def test_standalone_v2_signature_fails_if_revision_tampered_alone():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        init([str(target)])
+        memory = target / ".memory"
+        run_script("sign-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
+
+        manifest_path = memory / "manifests" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["revision"] = 999
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+        result = run_script("verify-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
+        assert result.returncode == 1
+
+
+def test_standalone_legacy_v1_signature_still_verifies_with_warning():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        init([str(target)])
+        memory = target / ".memory"
+        manifest_path = memory / "manifests" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        del manifest["tree_id"]
+        # sign_files_canonical reads KIMI_MEMORY_KEY from THIS process's own
+        # environment, not the subprocess env passed to run_script below.
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            sig = sign_files_canonical(manifest["files"])
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+        manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+        result = run_script("verify-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
+        assert result.returncode == 0
+        assert "legacy" in result.stderr.lower()
+
+
+def test_standalone_sign_upgrades_legacy_v1_tree_to_v2():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        init([str(target)])
+        memory = target / ".memory"
+        manifest_path = memory / "manifests" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        del manifest["tree_id"]
+        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        try:
+            sig = sign_files_canonical(manifest["files"])
+        finally:
+            del os.environ["KIMI_MEMORY_KEY"]
+        manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+        run_script("sign-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
+
+        upgraded = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert upgraded["signature"]["alg"] == "HMAC-SHA256-v2"
+        assert upgraded["tree_id"]
+
+        result = run_script("verify-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
+        assert result.returncode == 0

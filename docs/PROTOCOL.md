@@ -11,6 +11,14 @@ protocol is the contract; `memory_index_system` is one implementation of it.
 This is v1. Breaking changes to any rule below require a v2 document, not a
 silent edit to this one.
 
+> **[PROTOCOL-v2.md](PROTOCOL-v2.md) exists and changes the signing format**
+> (§3 below) to also cover `revision` and a new `tree_id` field, closing a
+> gap where either could be edited without the signing key without breaking
+> the signature. Everything else on this page — layout, manifest fields
+> besides the signature, optimistic concurrency, the registry, conformance —
+> is unchanged and still the current rule. A v1-signed manifest still
+> verifies correctly today; it's just flagged as legacy.
+
 ## 1. Directory layout
 
 A conformant `.memory/` tree contains, at minimum:
@@ -187,16 +195,23 @@ not part of what makes a tree conformant).
 
 ## 7. Known limitation: no rollback/replay protection
 
-A signature covers `files` (and, per §2, is computed over that array
-exactly as stored) — it does not cover `revision`, and there is no
-mechanism binding a signature to "this is the most recent valid state." A
-complete, validly-signed older manifest together with the files it
-describes can be restored wholesale over a newer state, and verification
-will pass: every hash matches what's recorded, and the signature matches
-what's signed, because both genuinely were valid together at some earlier
-point. Detecting that kind of rollback requires an external reference to
-"the last state I actually saw" (for instance, a caller comparing the
-current manifest's `revision` or hash against one it remembers from a
-previous verify, or the registry's `manifest_hash` field from an earlier
-scan) — nothing in the manifest format itself carries that information yet.
-This is a real, open gap, not an oversight being glossed over.
+*(Written for v1's files-only signature. [PROTOCOL-v2.md](PROTOCOL-v2.md)
+now covers `revision` and adds `tree_id`, which closes the "edit revision
+without the key" version of this problem described below — but not the
+rollback problem itself. Read on; it still applies to both v1 and v2.)*
+
+A v1 signature covers `files` only, so it does not cover `revision`, and
+there is no mechanism binding a signature to "this is the most recent valid
+state." Even under v2, where `revision` and `tree_id` are both covered, a
+complete, validly-signed *older* manifest together with the files it
+describes can still be restored wholesale over a newer state, and
+verification will pass: every hash matches what's recorded, and the
+signature matches what's signed, because both genuinely were valid together
+at some earlier point — the signature has no way to know it's not the
+current one. Detecting that kind of rollback requires an external reference
+to "the last state I actually saw" (for instance, a caller comparing the
+current manifest's `revision` against one it remembers from a previous
+verify, keyed by `tree_id` under v2 rather than by filesystem path, which
+doesn't survive a legitimate move) — nothing in the manifest format itself
+carries that information yet. This is a real, open gap, not an oversight
+being glossed over.

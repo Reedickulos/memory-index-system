@@ -7,6 +7,25 @@ versions may include breaking changes.
 
 ## [Unreleased]
 
+### Security
+- Signature verification now fails if a signature is absent while a signing
+  key is available (previously passed with a warning, letting a tamper +
+  signature-strip attack through undetected).
+- `memory-index-verify` now detects files present on disk but not recorded
+  in the manifest, and rejects manifest entries whose path could escape the
+  tree root (validated using the host's own path semantics, not a
+  POSIX-only pattern check — the original path-safety fix had a Windows
+  drive-letter/backslash bypass, since fixed).
+- Manifest signing (v2, `"alg": "HMAC-SHA256-v2"`) now covers `revision` and
+  a new `tree_id` field, not just `files` — previously either could be
+  edited by anyone without the signing key without invalidating the
+  signature. See docs/PROTOCOL-v2.md. Manifests signed under the old format
+  still verify, flagged as legacy; `memory-index-sign` upgrades a tree to
+  v2 automatically on its next run.
+- `memory-index-sign` now holds an advisory lock for its read-check-write
+  sequence and writes `manifest.json` atomically, closing most of a race
+  where two concurrent signs could both pass `--expect-revision`.
+
 ### Changed
 - Moved COREPACT AI TECHNOLOGIES branding out of technical docs (README
   quick start, architecture/manifest/agent-protocol/overview/FAQ) and into
@@ -14,6 +33,8 @@ versions may include breaking changes.
   reading past org branding first.
 - Added a zero-install `pipx run` quick-start path alongside the existing
   clone-and-install instructions.
+- Added the cross-project registry (`memory-index-registry-scan/-list/
+  -search/-diff`), staleness flagging, and `docs/PROTOCOL.md` (v1).
 
 ## [0.1.0] - 2026-06-19
 
