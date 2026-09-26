@@ -28,11 +28,11 @@ def test_spec_algorithm_matches_implementation():
 
     import os
 
-    os.environ["KIMI_MEMORY_KEY"] = key
+    os.environ["MEMORY_INDEX_KEY"] = key
     try:
         actual = sign_files_canonical(files)
     finally:
-        del os.environ["KIMI_MEMORY_KEY"]
+        del os.environ["MEMORY_INDEX_KEY"]
 
     expected = spec_signature(files, key)
     assert actual == expected

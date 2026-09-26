@@ -71,11 +71,23 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def sign_manifest_v2(revision, tree_id, files):
+def signing_key():
+    """MEMORY_INDEX_KEY, falling back to the deprecated KIMI_MEMORY_KEY so
+    existing setups keep working (with a warning)."""
+    key = os.environ.get("MEMORY_INDEX_KEY")
+    legacy = os.environ.get("KIMI_MEMORY_KEY")
+    if key:
+        if legacy and legacy != key:
+            print("Warning: KIMI_MEMORY_KEY is set to a different value and is ignored; MEMORY_INDEX_KEY takes precedence.", file=sys.stderr)
+        return key
+    if legacy:
+        print("Warning: KIMI_MEMORY_KEY is deprecated; set MEMORY_INDEX_KEY instead (the old name still works for now).", file=sys.stderr)
+        return legacy
+    return None
+
+
+def sign_manifest_v2(key, revision, tree_id, files):
     """Current signing: covers revision and tree_id in addition to files."""
-    key = os.environ.get("KIMI_MEMORY_KEY")
-    if not key:
-        return None
     payload = {"v": 2, "revision": revision, "tree_id": tree_id, "files": files}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hmac.new(key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
@@ -130,7 +142,7 @@ def main():
     # manifest.json edited to match a tampered file. The signature is what
     # actually protects against that, so check it when one is recorded.
     recorded = manifest.get("signature")
-    key = os.environ.get("KIMI_MEMORY_KEY")
+    key = signing_key()
     if recorded is None:
         if key:
             # A verifier holding the key almost certainly expects signed
@@ -152,13 +164,13 @@ def main():
         actual_sig = recorded.get("value") if isinstance(recorded, dict) else None
 
         if not key:
-            print("Signature check failed: manifest is signed but KIMI_MEMORY_KEY is not set; cannot verify", file=sys.stderr)
+            print("Signature check failed: manifest is signed but MEMORY_INDEX_KEY is not set; cannot verify", file=sys.stderr)
             ok = False
         elif not isinstance(actual_sig, str) or not actual_sig:
             print("Signature check failed: signature value is missing or not a string -- manifest may have been tampered with", file=sys.stderr)
             ok = False
         elif alg == "HMAC-SHA256-v2":
-            expected = sign_manifest_v2(manifest.get("revision", 0), manifest.get("tree_id", ""), manifest.get("files", []))
+            expected = sign_manifest_v2(key, manifest.get("revision", 0), manifest.get("tree_id", ""), manifest.get("files", []))
             if not expected or not hmac.compare_digest(actual_sig, expected):
                 print(
                     "Signature check failed: signature does not match -- manifest may have been "

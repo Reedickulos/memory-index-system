@@ -4,14 +4,32 @@ import hashlib
 import hmac
 import json
 import os
+import sys
 from typing import Optional
+
+KEY_ENV = "MEMORY_INDEX_KEY"
+LEGACY_KEY_ENV = "KIMI_MEMORY_KEY"
+_legacy_warning_shown = False
 
 
 def get_key() -> Optional[bytes]:
-    raw = os.environ.get("KIMI_MEMORY_KEY")
-    if not raw:
-        return None
-    return raw.encode("utf-8")
+    """The signing key from MEMORY_INDEX_KEY, falling back to the deprecated
+    KIMI_MEMORY_KEY so existing setups keep working. Warns once per process
+    when the old name is used or is being ignored."""
+    global _legacy_warning_shown
+    raw = os.environ.get(KEY_ENV)
+    legacy = os.environ.get(LEGACY_KEY_ENV)
+    warning = None
+    if raw:
+        if legacy and legacy != raw:
+            warning = f"{LEGACY_KEY_ENV} is set to a different value and is ignored; {KEY_ENV} takes precedence."
+    elif legacy:
+        warning = f"{LEGACY_KEY_ENV} is deprecated; set {KEY_ENV} instead (the old name still works for now)."
+        raw = legacy
+    if warning and not _legacy_warning_shown:
+        print(f"Warning: {warning}", file=sys.stderr)
+        _legacy_warning_shown = True
+    return raw.encode("utf-8") if raw else None
 
 
 def sign_files_canonical(files: list) -> Optional[str]:

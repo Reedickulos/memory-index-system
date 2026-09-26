@@ -37,26 +37,28 @@ def downgrade_to_legacy_v1_tree(memory: Path) -> None:
     # consistent -- a real pre-v2 tree would verify under its v1 signature.
     manifest = build_manifest(memory, revision=revision)
     del manifest["tree_id"]
-    os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+    os.environ["MEMORY_INDEX_KEY"] = "test-secret"
     try:
         sig = sign_files_canonical(manifest["files"])
     finally:
-        del os.environ["KIMI_MEMORY_KEY"]
+        del os.environ["MEMORY_INDEX_KEY"]
     manifest["signature"] = {"alg": "HMAC-SHA256", "value": sig}
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
 def init_signed(target: Path) -> Path:
     """init with the key set, so the tree is signed (v2) from the start."""
-    os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+    os.environ["MEMORY_INDEX_KEY"] = "test-secret"
     try:
         init([str(target)])
     finally:
-        del os.environ["KIMI_MEMORY_KEY"]
+        del os.environ["MEMORY_INDEX_KEY"]
     return target / ".memory"
 
 
-KEY_ENV = {"KIMI_MEMORY_KEY": "test-secret"}
+KEY_ENV = {"MEMORY_INDEX_KEY": "test-secret"}
+# The pre-v2 script in tests/fixtures is kept byte-for-byte, so it only knows the old name.
+LEGACY_SCRIPT_KEY_ENV = {"KIMI_MEMORY_KEY": "test-secret"}
 
 
 def run_script(script_name: str, memory: Path, env=None, args=()):
@@ -87,14 +89,14 @@ def test_standalone_sign_then_verify_roundtrip():
         target.mkdir()
         memory = init_signed(target)
 
-        sign_result = run_script("sign-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
+        sign_result = run_script("sign-manifest.py", memory, env={"MEMORY_INDEX_KEY": "test-secret"})
         assert sign_result.returncode == 0, sign_result.stderr
 
         manifest = json.loads((memory / "manifests" / "manifest.json").read_text(encoding="utf-8"))
         assert "signature" in manifest
         assert manifest["revision"] == 2  # init wrote 1, sign incremented it
 
-        verify_result = run_script("verify-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
+        verify_result = run_script("verify-manifest.py", memory, env={"MEMORY_INDEX_KEY": "test-secret"})
         assert verify_result.returncode == 0, verify_result.stderr
 
 
@@ -110,7 +112,7 @@ def test_standalone_verify_fails_when_signature_stripped_but_key_available():
         del manifest["signature"]
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-        result = run_script("verify-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
+        result = run_script("verify-manifest.py", memory, env={"MEMORY_INDEX_KEY": "test-secret"})
         assert result.returncode == 1
         assert "stripped" in result.stderr
 
@@ -214,7 +216,7 @@ def test_standalone_v2_signature_fails_if_revision_tampered_alone():
         manifest["revision"] = 999
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-        result = run_script("verify-manifest.py", memory, env={"KIMI_MEMORY_KEY": "test-secret"})
+        result = run_script("verify-manifest.py", memory, env={"MEMORY_INDEX_KEY": "test-secret"})
         assert result.returncode == 1
 
 
@@ -236,11 +238,11 @@ def test_standalone_verify_rejects_legacy_v1_signature():
         memory = target / ".memory"
         manifest = _load(memory)
         del manifest["tree_id"]
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             manifest["signature"] = {"alg": "HMAC-SHA256", "value": sign_files_canonical(manifest["files"])}
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
         _save(memory, manifest)
 
         result = run_script("verify-manifest.py", memory, env=KEY_ENV)
@@ -366,15 +368,15 @@ def test_legacy_in_tree_verifier_rejects_a_valid_v2_manifest():
         (memory / "scripts" / "verify-manifest.py").write_text(LEGACY_V1_VERIFY_SCRIPT, encoding="utf-8")
         previous = _load(memory)
         manifest = build_manifest(memory, revision=previous["revision"], tree_id=previous["tree_id"])
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             sig = sign_manifest_v2(manifest["revision"], manifest["tree_id"], manifest["files"])
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
         manifest["signature"] = {"alg": "HMAC-SHA256-v2", "value": sig}
         _save(memory, manifest)
 
-        result = run_script("verify-manifest.py", memory, env=KEY_ENV)
+        result = run_script("verify-manifest.py", memory, env=LEGACY_SCRIPT_KEY_ENV)
         assert result.returncode == 1
         assert "signature does not match" in result.stderr.lower()
 
@@ -387,11 +389,11 @@ def test_migrate_refreshes_legacy_scripts_so_the_in_tree_verifier_accepts_v2():
         memory = target / ".memory"
         downgrade_to_legacy_v1_tree(memory)
 
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             assert migrate([str(memory)]) == 0
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
 
         refreshed = (memory / "scripts" / "verify-manifest.py").read_text(encoding="utf-8")
         assert refreshed != LEGACY_V1_VERIFY_SCRIPT
@@ -418,13 +420,15 @@ def test_installed_sign_repairs_verifier_after_bundled_sign_adopted_tree():
         adopted = run_script("sign-manifest.py", memory, env=KEY_ENV, args=["--adopt-unsigned"])
         assert adopted.returncode == 0, adopted.stderr
         assert _load(memory)["tree_id"]
-        assert run_script("verify-manifest.py", memory, env=KEY_ENV).returncode == 1
+        legacy = run_script("verify-manifest.py", memory, env=LEGACY_SCRIPT_KEY_ENV)
+        assert legacy.returncode == 1
+        assert "signature does not match" in legacy.stderr.lower()
 
-        os.environ["KIMI_MEMORY_KEY"] = "test-secret"
+        os.environ["MEMORY_INDEX_KEY"] = "test-secret"
         try:
             assert sign([str(memory)]) == 0
         finally:
-            del os.environ["KIMI_MEMORY_KEY"]
+            del os.environ["MEMORY_INDEX_KEY"]
 
         result = run_script("verify-manifest.py", memory, env=KEY_ENV)
         assert result.returncode == 0, result.stderr
@@ -441,3 +445,18 @@ def test_standalone_sign_without_key_refuses_to_strip_a_signed_manifest():
         assert result.returncode == 1
         assert "would strip its signature" in result.stderr
         assert _load(memory) == before
+
+
+def test_standalone_scripts_accept_the_legacy_key_name_with_a_warning():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj"
+        target.mkdir()
+        memory = init_signed(target)
+        env = {"MEMORY_INDEX_KEY": "", "KIMI_MEMORY_KEY": "test-secret"}
+
+        signed = run_script("sign-manifest.py", memory, env=env)
+        assert signed.returncode == 0, signed.stderr
+        assert "KIMI_MEMORY_KEY is deprecated" in signed.stderr
+        verified = run_script("verify-manifest.py", memory, env=env)
+        assert verified.returncode == 0, verified.stderr
+        assert "KIMI_MEMORY_KEY is deprecated" in verified.stderr

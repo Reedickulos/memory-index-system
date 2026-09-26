@@ -49,6 +49,11 @@ versions may include breaking changes.
   where two concurrent signs could both pass `--expect-revision`.
 
 ### Changed
+- The signing key environment variable is now `MEMORY_INDEX_KEY`.
+  `KIMI_MEMORY_KEY` still works, with a deprecation warning; if both are set
+  to different values, `MEMORY_INDEX_KEY` wins and a warning says the old one
+  is ignored. Existing signatures are unaffected, since only the variable's
+  name changed, not the key.
 - Moved COREPACT AI TECHNOLOGIES branding out of technical docs (README
   quick start, architecture/manifest/agent-protocol/overview/FAQ) and into
   a single "About" section, so evaluating this as a library doesn't require

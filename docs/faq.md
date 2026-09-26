@@ -22,4 +22,4 @@ No. SHA-256 hashes are enough to detect accidental drift. HMAC-SHA256 signing is
 
 ## Can I embed this inside another repo?
 
-Yes. The `.memory/` tree can live inside any project. Add `*.key` and `KIMI_MEMORY_KEY` to `.gitignore` if you use signing.
+Yes. The `.memory/` tree can live inside any project. Add `*.key` and `MEMORY_INDEX_KEY` to `.gitignore` if you use signing.

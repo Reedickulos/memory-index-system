@@ -30,6 +30,7 @@ Thumbs.db
 # Memory system local credentials
 *.key
 *.pem
+MEMORY_INDEX_KEY
 KIMI_MEMORY_KEY
 
 # Vercel

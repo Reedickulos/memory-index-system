@@ -190,7 +190,7 @@ def verify_signature(manifest: Dict, allow_legacy: bool = False) -> Dict:
         return {
             "present": True,
             "ok": False,
-            "reason": "manifest is signed but KIMI_MEMORY_KEY is not set; cannot verify",
+            "reason": "manifest is signed but MEMORY_INDEX_KEY is not set; cannot verify",
         }
 
     alg = recorded.get("alg") if isinstance(recorded, dict) else None
